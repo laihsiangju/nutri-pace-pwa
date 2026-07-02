@@ -1390,7 +1390,7 @@
             <div class="date-row">
               <div>
                 <strong id="todayLabel">今日</strong>
-                <p class="subtitle" id="profileSubtitle">最新基準：162cm / 57kg / BMR 1174</p>
+                <p class="subtitle" id="profileSubtitle">尚未建立身體基準</p>
               </div>
               <div class="controls" aria-label="目標切換">
                 <div class="segmented" id="calorieGoal">
@@ -1411,14 +1411,14 @@
             </div>
 
             <div class="profile">
-              <div class="tile"><span>身高</span><strong>162 cm</strong></div>
-              <div class="tile"><span>最新體重</span><strong id="profileWeight">57 kg</strong></div>
-              <div class="tile"><span>最新 BMR</span><strong id="profileBmr">1174</strong></div>
+              <div class="tile"><span>身高</span><strong>未設定</strong></div>
+              <div class="tile"><span>最新體重</span><strong id="profileWeight">尚未記錄</strong></div>
+              <div class="tile"><span>最新 BMR</span><strong id="profileBmr">尚未估算</strong></div>
             </div>
 
             <div class="quick-body-editor">
-              <label>體重 kg<input class="field" id="quickWeight" type="number" min="0" step="0.1" placeholder="56.5" /></label>
-              <label>體脂 %<input class="field" id="quickBodyFat" type="number" min="0" step="0.1" placeholder="28.8" /></label>
+              <label>體重 kg<input class="field" id="quickWeight" type="number" min="0" step="0.1" placeholder="輸入體重" /></label>
+              <label>體脂 %<input class="field" id="quickBodyFat" type="number" min="0" step="0.1" placeholder="輸入體脂" /></label>
               <button class="tiny-button" id="updateBodyBaseline">更新身體基準</button>
             </div>
 
@@ -1467,10 +1467,10 @@
           </div>
           <div class="body-form">
             <label>日期<input class="field" id="metricDate" type="date" /></label>
-            <label>體重 kg<input class="field" id="metricWeight" type="number" min="0" step="0.1" placeholder="57.0" /></label>
-            <label>體脂 %<input class="field" id="metricBodyFat" type="number" min="0" step="0.1" placeholder="29.0" /></label>
-            <label>皮下脂肪 %<input class="field" id="metricSubFat" type="number" min="0" step="0.1" placeholder="24.0" /></label>
-            <label>內臟脂肪<input class="field" id="metricVisceral" type="number" min="0" step="0.1" placeholder="5.0" /></label>
+            <label>體重 kg<input class="field" id="metricWeight" type="number" min="0" step="0.1" placeholder="輸入體重" /></label>
+            <label>體脂 %<input class="field" id="metricBodyFat" type="number" min="0" step="0.1" placeholder="輸入體脂" /></label>
+            <label>皮下脂肪 %<input class="field" id="metricSubFat" type="number" min="0" step="0.1" placeholder="輸入皮下脂肪" /></label>
+            <label>內臟脂肪<input class="field" id="metricVisceral" type="number" min="0" step="0.1" placeholder="輸入內臟脂肪" /></label>
             <button class="tiny-button" id="saveMetric">儲存</button>
           </div>
           <div class="body-summary" id="bodySummary"></div>
@@ -1686,18 +1686,9 @@
         { day: "日", cal: 84, protein: 76 }
       ];
 
-      const sampleBodyMetrics = [
-        { date: "2026-06-25", weight: 57.4, bodyFat: 29.8, subcutaneousFat: 24.5, visceralFat: 5.5, bmr: 1171 },
-        { date: "2026-06-26", weight: 57.2, bodyFat: 29.7, subcutaneousFat: 24.4, visceralFat: 5.5, bmr: 1172 },
-        { date: "2026-06-27", weight: 57.1, bodyFat: 29.5, subcutaneousFat: 24.2, visceralFat: 5.4, bmr: 1173 },
-        { date: "2026-06-28", weight: 56.9, bodyFat: 29.4, subcutaneousFat: 24.0, visceralFat: 5.4, bmr: 1174 },
-        { date: "2026-06-29", weight: 56.8, bodyFat: 29.1, subcutaneousFat: 23.8, visceralFat: 5.3, bmr: 1175 },
-        { date: "2026-06-30", weight: 56.7, bodyFat: 29.0, subcutaneousFat: 23.7, visceralFat: 5.3, bmr: 1176 },
-        { date: "2026-07-01", weight: 56.6, bodyFat: 28.8, subcutaneousFat: 23.5, visceralFat: 5.2, bmr: 1177 }
-      ];
-
       const appConfig = window.NUTRI_PACE_CONFIG || {};
       const storeKey = "nutri-pace-pwa-v1";
+      const bodyMetricsCleanupVersion = 2;
       const driveFileName = appConfig.driveFileName || "nutri-pace-data.json";
       const driveScope = "https://www.googleapis.com/auth/drive.appdata";
       let accessToken = "";
@@ -1714,24 +1705,34 @@
         personalFoods: [],
         hiddenFoods: [],
         reportMode: "week",
+        bodyMetricsCleanupVersion,
         dinnerShuffle: 0,
         outsideDinnerShuffle: 0,
         currentView: "home",
         selectedMeal: "breakfast",
-        bodyMetrics: sampleBodyMetrics,
+        bodyMetrics: [],
         entries: {
-          breakfast: ["7-11 無糖豆漿", "水煮蛋"],
-          lunch: ["7-11 沙拉碗", "椒麻雞胸", "7-11 茶葉蛋"],
+          breakfast: [],
+          lunch: [],
           dinner: []
         }
       };
 
       let state = loadState();
 
+      function cleanLoadedState(saved) {
+        const next = saved ? { ...defaultState, ...saved } : structuredClone(defaultState);
+        if (!saved || saved.bodyMetricsCleanupVersion !== bodyMetricsCleanupVersion) {
+          next.bodyMetrics = [];
+          next.bodyMetricsCleanupVersion = bodyMetricsCleanupVersion;
+        }
+        return next;
+      }
+
       function loadState() {
         try {
           const saved = JSON.parse(localStorage.getItem(storeKey));
-          return saved ? { ...defaultState, ...saved } : structuredClone(defaultState);
+          return cleanLoadedState(saved);
         } catch {
           return structuredClone(defaultState);
         }
@@ -1865,7 +1866,7 @@
           const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
           const payload = await response.json();
           if (payload?.state) {
-            state = { ...defaultState, ...payload.state };
+            state = cleanLoadedState(payload.state);
             syncDirty = false;
             render();
             showToast("已從 Google Drive 載入資料");
@@ -2058,9 +2059,7 @@
       }
 
       function estimateBmr(weight) {
-        const baselineWeight = 57;
-        const baselineBmr = 1174;
-        return Math.round((Number(weight) / baselineWeight) * baselineBmr);
+        return Math.round(Number(weight) * 22);
       }
 
       function todayKey() {
@@ -2172,11 +2171,11 @@
 
       function renderProfile() {
         const latest = latestBodyMetric();
-        const weight = latest ? formatKg(latest.weight) : "57 kg";
-        const bmr = latest?.bmr ? Math.round(latest.bmr) : 1174;
+        const weight = latest ? formatKg(latest.weight) : "尚未記錄";
+        const bmr = latest?.bmr ? Math.round(latest.bmr) : "尚未估算";
         document.getElementById("profileWeight").textContent = weight;
         document.getElementById("profileBmr").textContent = bmr;
-        document.getElementById("profileSubtitle").textContent = `最新基準：162cm / ${weight} / BMR ${bmr}`;
+        document.getElementById("profileSubtitle").textContent = latest ? `最新基準：${weight} / BMR ${bmr}` : "尚未建立身體基準";
         const activeQuickEditor = document.activeElement?.closest?.(".quick-body-editor");
         if (!activeQuickEditor) {
           document.getElementById("quickWeight").value = latest?.weight || "";
