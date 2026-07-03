@@ -1134,7 +1134,7 @@
 
       .sync-actions {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
         gap: 8px;
       }
 
@@ -1656,10 +1656,12 @@
               <strong id="syncTitle">尚未連線</strong>
               <span id="syncDetail">資料存在 Google Drive 的隱藏 App Data，只有這個 App 會讀寫。</span>
               <span id="syncVersion">目前版本載入中</span>
+              <span id="syncLast">最後同步：尚未同步</span>
             </div>
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
               <button class="tiny-button" id="syncNow" disabled>立即同步</button>
+              <button class="tiny-button" id="pullDrive" disabled>從 Drive 合併</button>
               <button class="tiny-button" id="disconnectGoogle" disabled>登出 Drive</button>
               <button class="tiny-button" id="reloadApp">重新載入 App</button>
             </div>
@@ -1773,10 +1775,11 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v20";
+      const appVersion = "v21";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
+      const lastSyncKey = "nutri-pace-last-sync-at";
       const bodyMetricsCleanupVersion = 2;
       const driveFileName = appConfig.driveFileName || "nutri-pace-data.json";
       const driveScope = "https://www.googleapis.com/auth/drive.appdata";
@@ -1823,6 +1826,14 @@
         const label = `Nutri Pace ${appVersion}`;
         document.getElementById("appVersionLabel").textContent = label;
         document.getElementById("syncVersion").textContent = `目前版本：${label}`;
+        updateLastSyncLabel();
+      }
+
+      function updateLastSyncLabel() {
+        const syncLast = document.getElementById("syncLast");
+        if (!syncLast) return;
+        const lastSync = localStorage.getItem(lastSyncKey);
+        syncLast.textContent = lastSync ? `最後同步：${new Date(lastSync).toLocaleString("zh-TW")}` : "最後同步：尚未同步";
       }
 
       function cleanLoadedState(saved) {
@@ -1918,16 +1929,20 @@
       function updateSyncUi() {
         const connectButton = document.getElementById("connectGoogle");
         const syncButton = document.getElementById("syncNow");
+        const pullButton = document.getElementById("pullDrive");
         const disconnectButton = document.getElementById("disconnectGoogle");
+        updateLastSyncLabel();
         if (!hasGoogleConfig()) {
           connectButton.disabled = true;
           syncButton.disabled = true;
+          pullButton.disabled = true;
           disconnectButton.disabled = true;
           setSyncStatus("需要設定 Client ID", "先在 app-config.js 填入 Google OAuth Client ID；目前仍使用手機/瀏覽器本地儲存。");
           return;
         }
         connectButton.disabled = false;
         syncButton.disabled = false;
+        pullButton.disabled = false;
         disconnectButton.disabled = !driveRemembered && !driveReady;
         connectButton.textContent = driveReady || driveRemembered ? "已登入" : "登入 Google";
         if (driveReady) {
@@ -1998,6 +2013,31 @@
         } catch {
           setSyncStatus("Google 登入未完成", "請重新按登入 Google，並允許 Drive 權限。");
           showToast("Google 登入未完成");
+        }
+      }
+
+      async function syncNowWithMerge() {
+        try {
+          const granted = await ensureGoogleAccess(true);
+          if (!granted) return;
+          await loadFromDrive();
+          await syncToDrive(true);
+        } catch {
+          setSyncStatus("同步未完成", "請確認兩台裝置都登入同一個 Google 帳號，並允許 Drive 權限。");
+          showToast("同步未完成");
+        }
+      }
+
+      async function pullLatestFromDrive() {
+        try {
+          const granted = await ensureGoogleAccess(true);
+          if (!granted) return;
+          await loadFromDrive();
+          await syncToDrive(true);
+          showToast("已從 Drive 合併最新資料");
+        } catch {
+          setSyncStatus("Drive 合併未完成", "請重新登入 Google，並確認使用同一個 Google 帳號。");
+          showToast("Drive 合併未完成");
         }
       }
 
@@ -2221,6 +2261,8 @@
             driveFileId = created.id;
           }
           syncDirty = false;
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+          updateLastSyncLabel();
           setSyncStatus("已同步 Google Drive", `最新資料已寫入隱藏 App Data 的 ${driveFileName}，並保留本機備份。`, "drive");
           showToast("已同步到 Google Drive");
         } catch (error) {
@@ -3667,7 +3709,8 @@
       });
 
       document.getElementById("connectGoogle").addEventListener("click", requestGoogleAccess);
-      document.getElementById("syncNow").addEventListener("click", () => syncToDrive(true));
+      document.getElementById("syncNow").addEventListener("click", syncNowWithMerge);
+      document.getElementById("pullDrive").addEventListener("click", pullLatestFromDrive);
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       document.getElementById("reloadApp").addEventListener("click", reloadApp);
       setupPullRefresh();
