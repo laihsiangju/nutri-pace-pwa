@@ -1,4 +1,4 @@
-const CACHE_NAME = "nutri-pace-pwa-v18";
+const CACHE_NAME = "nutri-pace-pwa-v20";
 const APP_SHELL = [
   "./",
   "./index.html",

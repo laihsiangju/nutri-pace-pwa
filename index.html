@@ -1773,7 +1773,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v18";
+      const appVersion = "v20";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -1788,6 +1788,7 @@
       let driveRemembered = localStorage.getItem(driveConnectionKey) === "1";
       let syncDirty = false;
       let syncTimer = 0;
+      let syncInFlight = false;
       let pendingTokenRequest = null;
       let editingFoodRows = new Set();
       let pullStartY = 0;
@@ -1825,12 +1826,60 @@
       }
 
       function cleanLoadedState(saved) {
-        const next = saved ? { ...defaultState, ...saved } : structuredClone(defaultState);
-        if (!saved || saved.bodyMetricsCleanupVersion !== bodyMetricsCleanupVersion) {
-          next.bodyMetrics = [];
-          next.bodyMetricsCleanupVersion = bodyMetricsCleanupVersion;
-        }
+        if (!saved) return structuredClone(defaultState);
+        const next = { ...defaultState, ...saved };
+        next.bodyMetrics = Array.isArray(saved.bodyMetrics) ? saved.bodyMetrics : [];
+        next.bodyMetricsCleanupVersion = bodyMetricsCleanupVersion;
+        next.entries = { ...defaultState.entries, ...(saved.entries || {}) };
+        next.personalFoods = Array.isArray(saved.personalFoods) ? saved.personalFoods : [];
+        next.hiddenFoods = Array.isArray(saved.hiddenFoods) ? saved.hiddenFoods : [];
         return next;
+      }
+
+      function hasMeaningfulLocalData(localState) {
+        const entryCount = meals.reduce((sum, meal) => sum + (localState.entries?.[meal.id]?.length || 0), 0);
+        return Boolean(entryCount || localState.bodyMetrics?.length || localState.personalFoods?.length || localState.hiddenFoods?.length);
+      }
+
+      function mergeByName(driveItems = [], localItems = []) {
+        const merged = new Map();
+        driveItems.forEach((item) => item?.name && merged.set(item.name, item));
+        localItems.forEach((item) => item?.name && merged.set(item.name, item));
+        return Array.from(merged.values());
+      }
+
+      function mergeBodyMetrics(driveItems = [], localItems = []) {
+        const merged = new Map();
+        driveItems.forEach((item) => item?.date && merged.set(item.date, item));
+        localItems.forEach((item) => item?.date && merged.set(item.date, item));
+        return Array.from(merged.values()).sort((a, b) => a.date.localeCompare(b.date));
+      }
+
+      function mergeMealEntries(driveEntries = {}, localEntries = {}) {
+        return meals.reduce((next, meal) => {
+          const localItems = Array.isArray(localEntries?.[meal.id]) ? localEntries[meal.id] : [];
+          const driveItems = Array.isArray(driveEntries?.[meal.id]) ? driveEntries[meal.id] : [];
+          const primary = localItems.length >= driveItems.length ? [...localItems] : [...driveItems];
+          const secondary = localItems.length >= driveItems.length ? driveItems : localItems;
+          secondary.forEach((name) => {
+            if (!primary.includes(name)) primary.push(name);
+          });
+          next[meal.id] = primary;
+          return next;
+        }, {});
+      }
+
+      function mergeDriveState(localState, driveState) {
+        if (!hasMeaningfulLocalData(localState)) return driveState;
+        return {
+          ...driveState,
+          ...localState,
+          entries: mergeMealEntries(driveState.entries, localState.entries),
+          personalFoods: mergeByName(driveState.personalFoods, localState.personalFoods),
+          hiddenFoods: Array.from(new Set([...(driveState.hiddenFoods || []), ...(localState.hiddenFoods || [])])),
+          bodyMetrics: mergeBodyMetrics(driveState.bodyMetrics, localState.bodyMetrics),
+          bodyMetricsCleanupVersion
+        };
       }
 
       function loadState() {
@@ -1845,7 +1894,10 @@
       function saveState() {
         localStorage.setItem(storeKey, JSON.stringify(state));
         syncDirty = true;
-        scheduleDriveSync();
+        if (driveReady || driveRemembered) {
+          setSyncStatus("等待同步到 Google Drive", "本機已保存，正在把資料送到 Drive。", "drive");
+        }
+        scheduleDriveSync(180);
       }
 
       function hasGoogleConfig() {
@@ -2033,10 +2085,10 @@
         document.addEventListener("touchcancel", resetPullRefresh);
       }
 
-      function scheduleDriveSync() {
+      function scheduleDriveSync(delay = 180) {
         if (!driveReady && !driveRemembered) return;
         clearTimeout(syncTimer);
-        syncTimer = setTimeout(() => syncToDrive(false), 1200);
+        syncTimer = setTimeout(() => syncToDrive(false), delay);
       }
 
       async function driveFetch(url, options = {}) {
@@ -2116,10 +2168,10 @@
           const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
           const payload = await response.json();
           if (payload?.state) {
-            state = cleanLoadedState(payload.state);
-            syncDirty = false;
+            state = mergeDriveState(state, cleanLoadedState(payload.state));
+            syncDirty = true;
             render();
-            showToast("已從 Google Drive 載入資料");
+            showToast("已合併 Google Drive 與本機資料");
           }
         } catch (error) {
           const detail = describeDriveError(error);
@@ -2131,6 +2183,11 @@
       async function syncToDrive(force) {
         if (!driveReady && !driveRemembered && !force) return;
         if (!syncDirty && !force) return;
+        if (syncInFlight) {
+          scheduleDriveSync(320);
+          return;
+        }
+        syncInFlight = true;
         try {
           const granted = await ensureGoogleAccess(force);
           if (!granted) return;
@@ -2164,7 +2221,7 @@
             driveFileId = created.id;
           }
           syncDirty = false;
-          updateSyncUi();
+          setSyncStatus("已同步 Google Drive", `最新資料已寫入隱藏 App Data 的 ${driveFileName}，並保留本機備份。`, "drive");
           showToast("已同步到 Google Drive");
         } catch (error) {
           accessToken = "";
@@ -2173,7 +2230,14 @@
           const detail = describeDriveError(error);
           setSyncStatus("Drive 同步失敗", `${detail} 本機資料已保存。`);
           showToast("Drive 同步失敗，請看同步頁說明");
+        } finally {
+          syncInFlight = false;
         }
+      }
+
+      function flushDriveSync() {
+        if (!syncDirty || !hasValidAccessToken()) return;
+        syncToDrive(true).catch(() => {});
       }
 
       async function autoReconnectDrive() {
@@ -3607,6 +3671,10 @@
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       document.getElementById("reloadApp").addEventListener("click", reloadApp);
       setupPullRefresh();
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flushDriveSync();
+      });
+      window.addEventListener("pagehide", flushDriveSync);
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
           navigator.serviceWorker.register("sw.js").catch(() => {});
