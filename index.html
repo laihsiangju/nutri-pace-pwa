@@ -47,6 +47,29 @@
         overflow: hidden;
       }
 
+      .pull-refresh {
+        position: fixed;
+        top: max(10px, env(safe-area-inset-top));
+        left: 50%;
+        z-index: 70;
+        min-width: 118px;
+        padding: 9px 13px;
+        border: 1px solid #cfd8cf;
+        border-radius: 999px;
+        background: rgba(255, 253, 248, 0.96);
+        color: #2d5e45;
+        box-shadow: 0 12px 30px rgba(52, 50, 43, 0.14);
+        font-size: 12px;
+        font-weight: 820;
+        text-align: center;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, -62px);
+        transition:
+          opacity 0.16s ease,
+          transform 0.16s ease;
+      }
+
       button,
       input,
       select {
@@ -1310,6 +1333,7 @@
     </style>
   </head>
   <body>
+    <div class="pull-refresh" id="pullRefresh" aria-hidden="true">下拉刷新</div>
     <main class="page">
       <header class="topbar">
         <div class="brand">
@@ -1698,7 +1722,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v13";
+      const appVersion = "v14";
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
       const bodyMetricsCleanupVersion = 2;
@@ -1714,6 +1738,11 @@
       let syncTimer = 0;
       let pendingTokenRequest = null;
       let editingFoodRows = new Set();
+      let pullStartY = 0;
+      let pullDistance = 0;
+      let pullTracking = false;
+      let pullRefreshing = false;
+      const pullRefreshThreshold = 86;
       const defaultState = {
         calorieGoal: 1350,
         proteinGoal: 100,
@@ -1890,6 +1919,65 @@
           await Promise.all(registrations.map((registration) => registration.update().catch(() => {})));
         }
         window.location.reload();
+      }
+
+      function updatePullRefresh(distance, text) {
+        const indicator = document.getElementById("pullRefresh");
+        indicator.textContent = text;
+        indicator.style.opacity = distance > 0 ? "1" : "0";
+        indicator.style.transform = `translate(-50%, ${Math.min(distance - 62, 42)}px)`;
+      }
+
+      function resetPullRefresh() {
+        pullDistance = 0;
+        pullTracking = false;
+        updatePullRefresh(0, "下拉刷新");
+      }
+
+      function shouldIgnorePullTarget(target) {
+        return Boolean(target.closest("input, textarea, select, button, [contenteditable='true']"));
+      }
+
+      function setupPullRefresh() {
+        document.addEventListener(
+          "touchstart",
+          (event) => {
+            if (pullRefreshing || event.touches.length !== 1 || window.scrollY > 0 || shouldIgnorePullTarget(event.target)) return;
+            pullStartY = event.touches[0].clientY;
+            pullDistance = 0;
+            pullTracking = true;
+          },
+          { passive: true }
+        );
+
+        document.addEventListener(
+          "touchmove",
+          (event) => {
+            if (!pullTracking || event.touches.length !== 1) return;
+            const delta = event.touches[0].clientY - pullStartY;
+            if (delta <= 0 || window.scrollY > 0) {
+              resetPullRefresh();
+              return;
+            }
+            pullDistance = Math.min(delta * 0.55, 130);
+            if (pullDistance > 8) event.preventDefault();
+            updatePullRefresh(pullDistance, pullDistance >= pullRefreshThreshold ? "放開刷新" : "下拉刷新");
+          },
+          { passive: false }
+        );
+
+        document.addEventListener("touchend", () => {
+          if (!pullTracking) return;
+          if (pullDistance >= pullRefreshThreshold) {
+            pullRefreshing = true;
+            updatePullRefresh(104, "正在刷新");
+            reloadApp();
+            return;
+          }
+          resetPullRefresh();
+        });
+
+        document.addEventListener("touchcancel", resetPullRefresh);
       }
 
       function scheduleDriveSync() {
@@ -3372,6 +3460,7 @@
       document.getElementById("syncNow").addEventListener("click", () => syncToDrive(true));
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       document.getElementById("reloadApp").addEventListener("click", reloadApp);
+      setupPullRefresh();
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
           navigator.serviceWorker.register("sw.js").catch(() => {});
