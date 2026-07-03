@@ -1589,7 +1589,7 @@
         <div class="view-head">
           <div>
             <h2>Google Drive 同步</h2>
-            <p>把資料存到你的私人 Google Drive JSON</p>
+            <p>把資料存到你的 Google Drive 隱藏 App Data，不會出現在一般雲端硬碟列表</p>
           </div>
         </div>
         <article class="panel">
@@ -1599,7 +1599,7 @@
           <div class="sync-body">
             <div class="sync-state">
               <strong id="syncTitle">尚未連線</strong>
-              <span id="syncDetail">填入 Google OAuth Client ID 後，可把資料同步到你的私人 Drive JSON 檔。</span>
+              <span id="syncDetail">資料存在 Google Drive 的隱藏 App Data，只有這個 App 會讀寫。</span>
             </div>
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
@@ -1780,7 +1780,7 @@
         disconnectButton.disabled = !driveRemembered && !driveReady;
         connectButton.textContent = driveReady || driveRemembered ? "已登入" : "登入 Google";
         if (driveReady) {
-          setSyncStatus("已連線 Google Drive", `資料會同步到 ${driveFileName}，並保留本機備份。`, "drive");
+          setSyncStatus("已連線 Google Drive", `資料會同步到隱藏 App Data 的 ${driveFileName}，並保留本機備份。`, "drive");
         } else if (driveRemembered) {
           setSyncStatus("已記住 Google Drive", "需要同步時會自動續接授權；你也可以按立即同步。", "drive");
         } else {
@@ -1882,9 +1882,36 @@
         });
         if (!response.ok) {
           const message = await response.text();
-          throw new Error(message || `Drive request failed: ${response.status}`);
+          const error = new Error(message || `Drive request failed: ${response.status}`);
+          error.status = response.status;
+          error.body = message;
+          throw error;
         }
         return response;
+      }
+
+      function describeDriveError(error) {
+        const raw = String(error?.body || error?.message || "");
+        let apiMessage = "";
+        try {
+          const parsed = JSON.parse(raw);
+          apiMessage = parsed?.error?.message || "";
+        } catch {
+          apiMessage = raw;
+        }
+
+        const message = apiMessage || "請重新登入 Google，並確認已允許 Drive 權限。";
+        const lower = message.toLowerCase();
+        if (lower.includes("has not been used") || lower.includes("disabled")) {
+          return "Google Drive API 可能尚未啟用。請到 Google Cloud 的 API 與服務啟用 Google Drive API。";
+        }
+        if (lower.includes("insufficient") || lower.includes("permission") || error?.status === 401) {
+          return "Drive 權限不足或登入已過期。請按登出 Drive 後重新登入，並允許 Drive 權限。";
+        }
+        if (error?.status === 403) {
+          return `Google 拒絕 Drive 寫入：${message}`;
+        }
+        return `Google Drive 回傳：${message}`;
       }
 
       function driveQueryName(name) {
@@ -1928,8 +1955,9 @@
             showToast("已從 Google Drive 載入資料");
           }
         } catch (error) {
-          setSyncStatus("Drive 讀取失敗", "仍保留本機資料，請稍後重新登入或同步。");
-          showToast("Drive 讀取失敗，本機資料仍安全");
+          const detail = describeDriveError(error);
+          setSyncStatus("Drive 讀取失敗", `${detail} 本機資料仍安全。`);
+          showToast("Drive 讀取失敗，請看同步頁說明");
         }
       }
 
@@ -1976,9 +2004,9 @@
           accessToken = "";
           accessTokenExpiresAt = 0;
           driveReady = false;
-          setSyncStatus("Drive 同步失敗", "本機資料已保存，網路或授權恢復後可再按立即同步。");
-          showToast("Drive 同步失敗，本機資料已保存");
-          updateSyncUi();
+          const detail = describeDriveError(error);
+          setSyncStatus("Drive 同步失敗", `${detail} 本機資料已保存。`);
+          showToast("Drive 同步失敗，請看同步頁說明");
         }
       }
 
