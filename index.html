@@ -1660,8 +1660,7 @@
             </div>
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
-              <button class="tiny-button" id="syncNow" disabled>立即同步</button>
-              <button class="tiny-button" id="pullDrive" disabled>從 Drive 合併</button>
+              <button class="tiny-button" id="syncNow" disabled>同步最新資料</button>
               <button class="tiny-button" id="disconnectGoogle" disabled>登出 Drive</button>
               <button class="tiny-button" id="reloadApp">重新載入 App</button>
             </div>
@@ -1775,7 +1774,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v21";
+      const appVersion = "v22";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -1807,6 +1806,7 @@
         hiddenFoods: [],
         reportMode: "week",
         bodyMetricsCleanupVersion,
+        dataUpdatedAt: "",
         dinnerShuffle: 0,
         outsideDinnerShuffle: 0,
         bodyMetricsPage: 1,
@@ -1844,7 +1844,13 @@
         next.entries = { ...defaultState.entries, ...(saved.entries || {}) };
         next.personalFoods = Array.isArray(saved.personalFoods) ? saved.personalFoods : [];
         next.hiddenFoods = Array.isArray(saved.hiddenFoods) ? saved.hiddenFoods : [];
+        next.dataUpdatedAt = saved.dataUpdatedAt || "";
         return next;
+      }
+
+      function markDataChanged() {
+        state.dataUpdatedAt = new Date().toISOString();
+        syncDirty = true;
       }
 
       function hasMeaningfulLocalData(localState) {
@@ -1882,8 +1888,11 @@
 
       function mergeDriveState(localState, driveState) {
         if (!hasMeaningfulLocalData(localState)) return driveState;
+        const localTime = Date.parse(localState.dataUpdatedAt || "") || 0;
+        const driveTime = Date.parse(driveState.dataUpdatedAt || "") || 0;
+        if (driveTime > localTime) return driveState;
+        if (localTime > driveTime) return localState;
         return {
-          ...driveState,
           ...localState,
           entries: mergeMealEntries(driveState.entries, localState.entries),
           personalFoods: mergeByName(driveState.personalFoods, localState.personalFoods),
@@ -1904,11 +1913,10 @@
 
       function saveState() {
         localStorage.setItem(storeKey, JSON.stringify(state));
-        syncDirty = true;
-        if (driveReady || driveRemembered) {
+        if (syncDirty && (driveReady || driveRemembered)) {
           setSyncStatus("等待同步到 Google Drive", "本機已保存，正在把資料送到 Drive。", "drive");
+          scheduleDriveSync(180);
         }
-        scheduleDriveSync(180);
       }
 
       function hasGoogleConfig() {
@@ -1929,20 +1937,17 @@
       function updateSyncUi() {
         const connectButton = document.getElementById("connectGoogle");
         const syncButton = document.getElementById("syncNow");
-        const pullButton = document.getElementById("pullDrive");
         const disconnectButton = document.getElementById("disconnectGoogle");
         updateLastSyncLabel();
         if (!hasGoogleConfig()) {
           connectButton.disabled = true;
           syncButton.disabled = true;
-          pullButton.disabled = true;
           disconnectButton.disabled = true;
           setSyncStatus("需要設定 Client ID", "先在 app-config.js 填入 Google OAuth Client ID；目前仍使用手機/瀏覽器本地儲存。");
           return;
         }
         connectButton.disabled = false;
         syncButton.disabled = false;
-        pullButton.disabled = false;
         disconnectButton.disabled = !driveRemembered && !driveReady;
         connectButton.textContent = driveReady || driveRemembered ? "已登入" : "登入 Google";
         if (driveReady) {
@@ -2025,19 +2030,6 @@
         } catch {
           setSyncStatus("同步未完成", "請確認兩台裝置都登入同一個 Google 帳號，並允許 Drive 權限。");
           showToast("同步未完成");
-        }
-      }
-
-      async function pullLatestFromDrive() {
-        try {
-          const granted = await ensureGoogleAccess(true);
-          if (!granted) return;
-          await loadFromDrive();
-          await syncToDrive(true);
-          showToast("已從 Drive 合併最新資料");
-        } catch {
-          setSyncStatus("Drive 合併未完成", "請重新登入 Google，並確認使用同一個 Google 帳號。");
-          showToast("Drive 合併未完成");
         }
       }
 
@@ -2208,10 +2200,14 @@
           const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
           const payload = await response.json();
           if (payload?.state) {
-            state = mergeDriveState(state, cleanLoadedState(payload.state));
-            syncDirty = true;
+            const localBeforeMerge = state;
+            const driveState = cleanLoadedState(payload.state);
+            state = mergeDriveState(localBeforeMerge, driveState);
+            const localTime = Date.parse(localBeforeMerge.dataUpdatedAt || "") || 0;
+            const driveTime = Date.parse(driveState.dataUpdatedAt || "") || 0;
+            syncDirty = localTime > driveTime;
             render();
-            showToast("已合併 Google Drive 與本機資料");
+            showToast("已載入最新資料");
           }
         } catch (error) {
           const detail = describeDriveError(error);
@@ -3268,6 +3264,7 @@
         const existing = state.personalFoods.findIndex((item) => item.name === food.name);
         if (existing >= 0) state.personalFoods[existing] = food;
         else state.personalFoods.push(food);
+        markDataChanged();
       }
 
       function updateEntryFoodName(oldName, newName) {
@@ -3358,6 +3355,7 @@
 
         if (isBaseFood && personalIndex >= 0) {
           state.personalFoods.splice(personalIndex, 1);
+          markDataChanged();
           showToast(`${foodName} 已還原成預設資料`);
           clearFoodForm();
           render();
@@ -3367,6 +3365,7 @@
         if (isBaseFood) {
           state.hiddenFoods = Array.from(new Set([...(state.hiddenFoods || []), foodName]));
           removeFoodFromEntries(foodName);
+          markDataChanged();
           showToast(`${foodName} 已從食物清單移除`);
           clearFoodForm();
           render();
@@ -3376,6 +3375,7 @@
         if (personalIndex >= 0) {
           state.personalFoods.splice(personalIndex, 1);
           removeFoodFromEntries(foodName);
+          markDataChanged();
           showToast(`${foodName} 已刪除`);
           clearFoodForm();
           render();
@@ -3385,6 +3385,7 @@
       function addFoodToMeal(mealId, foodName) {
         if (!state.entries[mealId]) state.entries[mealId] = [];
         state.entries[mealId].push(foodName);
+        markDataChanged();
         showToast(`${foodName} 已加入${meals.find((meal) => meal.id === mealId).label}`);
         render();
       }
@@ -3404,6 +3405,7 @@
         else state.bodyMetrics.push(metric);
         state.bodyMetrics.sort((a, b) => a.date.localeCompare(b.date));
         state.bodyMetricsPage = 1;
+        markDataChanged();
         showToast(messagePrefix || `${metric.date} 身體紀錄已儲存`);
         render();
         return true;
@@ -3430,6 +3432,7 @@
         const mealId = state.selectedMeal || "breakfast";
         const mealLabel = meals.find((meal) => meal.id === mealId)?.label || "目前餐別";
         state.entries[mealId].push(...selected.items);
+        markDataChanged();
         showToast(`${selected.name} 已加入${mealLabel}`);
         render();
       }
@@ -3437,6 +3440,7 @@
       function applyDinnerPlan(plan) {
         if (!plan) return;
         state.entries.dinner.push(...plan.items);
+        markDataChanged();
         showToast("晚餐建議已套用");
         render();
       }
@@ -3445,6 +3449,7 @@
         if (!plan) return;
         plan.foods.forEach((food) => upsertPersonalFood(food));
         state.entries.dinner.push(...plan.items);
+        markDataChanged();
         showToast("清單外建議已存入食物資料庫並加入晚餐");
         render();
       }
@@ -3485,6 +3490,7 @@
           }
           upsertPersonalFood(result.food);
           state.entries[state.selectedMeal || "breakfast"].push(result.food.name);
+          markDataChanged();
           const mealLabel = meals.find((meal) => meal.id === (state.selectedMeal || "breakfast")).label;
           showToast(
             result.usedEstimate || appliedEstimate
@@ -3534,6 +3540,7 @@
         const remove = event.target.closest("[data-remove]");
         if (remove) {
           state.entries[remove.dataset.remove].splice(Number(remove.dataset.index), 1);
+          markDataChanged();
           render();
           return;
         }
@@ -3596,6 +3603,7 @@
         const button = event.target.closest("button[data-goal]");
         if (!button) return;
         state.calorieGoal = Number(button.dataset.goal);
+        markDataChanged();
         render();
       });
 
@@ -3603,6 +3611,7 @@
         const button = event.target.closest("button[data-goal]");
         if (!button) return;
         state.proteinGoal = Number(button.dataset.goal);
+        markDataChanged();
         render();
       });
 
@@ -3615,6 +3624,7 @@
         }
         state.calorieGoal = Math.round(calorieGoal);
         state.proteinGoal = Math.round(proteinGoal);
+        markDataChanged();
         showToast(`目標已更新：${state.calorieGoal} kcal / 蛋白 ${state.proteinGoal}g`);
         render();
       });
@@ -3623,11 +3633,13 @@
         const button = event.target.closest("button[data-stage]");
         if (!button) return;
         state.cycle = button.dataset.stage;
+        markDataChanged();
         render();
       });
 
       document.getElementById("resetDay").addEventListener("click", () => {
         state.entries = { breakfast: [], lunch: [], dinner: [] };
+        markDataChanged();
         showToast("今日紀錄已清空");
         render();
       });
@@ -3710,7 +3722,6 @@
 
       document.getElementById("connectGoogle").addEventListener("click", requestGoogleAccess);
       document.getElementById("syncNow").addEventListener("click", syncNowWithMerge);
-      document.getElementById("pullDrive").addEventListener("click", pullLatestFromDrive);
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       document.getElementById("reloadApp").addEventListener("click", reloadApp);
       setupPullRefresh();
