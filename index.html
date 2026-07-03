@@ -1088,7 +1088,7 @@
 
       .sync-actions {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
 
@@ -1604,6 +1604,7 @@
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
               <button class="tiny-button" id="syncNow" disabled>立即同步</button>
+              <button class="tiny-button" id="disconnectGoogle" disabled>登出 Drive</button>
             </div>
           </div>
         </article>
@@ -1688,15 +1689,19 @@
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
       const storeKey = "nutri-pace-pwa-v1";
+      const driveConnectionKey = "nutri-pace-drive-connected";
       const bodyMetricsCleanupVersion = 2;
       const driveFileName = appConfig.driveFileName || "nutri-pace-data.json";
       const driveScope = "https://www.googleapis.com/auth/drive.appdata";
       let accessToken = "";
+      let accessTokenExpiresAt = 0;
       let tokenClient = null;
       let driveFileId = "";
       let driveReady = false;
+      let driveRemembered = localStorage.getItem(driveConnectionKey) === "1";
       let syncDirty = false;
       let syncTimer = 0;
+      let pendingTokenRequest = null;
       let editingFoodRows = new Set();
       const defaultState = {
         calorieGoal: 1350,
@@ -1762,20 +1767,29 @@
       function updateSyncUi() {
         const connectButton = document.getElementById("connectGoogle");
         const syncButton = document.getElementById("syncNow");
+        const disconnectButton = document.getElementById("disconnectGoogle");
         if (!hasGoogleConfig()) {
           connectButton.disabled = true;
           syncButton.disabled = true;
+          disconnectButton.disabled = true;
           setSyncStatus("需要設定 Client ID", "先在 app-config.js 填入 Google OAuth Client ID；目前仍使用手機/瀏覽器本地儲存。");
           return;
         }
         connectButton.disabled = false;
-        syncButton.disabled = !driveReady;
-        connectButton.textContent = driveReady ? "已登入" : "登入 Google";
+        syncButton.disabled = false;
+        disconnectButton.disabled = !driveRemembered && !driveReady;
+        connectButton.textContent = driveReady || driveRemembered ? "已登入" : "登入 Google";
         if (driveReady) {
           setSyncStatus("已連線 Google Drive", `資料會同步到 ${driveFileName}，並保留本機備份。`, "drive");
+        } else if (driveRemembered) {
+          setSyncStatus("已記住 Google Drive", "需要同步時會自動續接授權；你也可以按立即同步。", "drive");
         } else {
           setSyncStatus("可連線 Google Drive", "登入後會先讀取你的 Drive JSON，再把今天資料同步回去。");
         }
+      }
+
+      function hasValidAccessToken() {
+        return Boolean(accessToken && Date.now() < accessTokenExpiresAt - 60000);
       }
 
       function initGoogleClient() {
@@ -1794,10 +1808,16 @@
             callback: async (response) => {
               if (response?.access_token) {
                 accessToken = response.access_token;
+                accessTokenExpiresAt = Date.now() + Number(response.expires_in || 3600) * 1000;
                 driveReady = true;
+                driveRemembered = true;
+                localStorage.setItem(driveConnectionKey, "1");
                 updateSyncUi();
-                await loadFromDrive();
-                await syncToDrive(true);
+                pendingTokenRequest?.resolve(true);
+                pendingTokenRequest = null;
+              } else {
+                pendingTokenRequest?.reject(new Error(response?.error || "Google authorization failed"));
+                pendingTokenRequest = null;
               }
             }
           });
@@ -1805,13 +1825,49 @@
         return true;
       }
 
-      function requestGoogleAccess() {
-        if (!initGoogleClient()) return;
-        tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+      function ensureGoogleAccess(interactive = false) {
+        if (hasValidAccessToken()) {
+          driveReady = true;
+          updateSyncUi();
+          return Promise.resolve(true);
+        }
+        if (!initGoogleClient()) return Promise.resolve(false);
+        return new Promise((resolve, reject) => {
+          pendingTokenRequest = { resolve, reject };
+          tokenClient.requestAccessToken({ prompt: !driveRemembered ? "consent" : "" });
+        });
+      }
+
+      async function requestGoogleAccess() {
+        try {
+          const granted = await ensureGoogleAccess(true);
+          if (!granted) return;
+          await loadFromDrive();
+          await syncToDrive(true);
+        } catch {
+          setSyncStatus("Google 登入未完成", "請重新按登入 Google，並允許 Drive 權限。");
+          showToast("Google 登入未完成");
+        }
+      }
+
+      function disconnectGoogleDrive() {
+        const tokenToRevoke = accessToken;
+        accessToken = "";
+        accessTokenExpiresAt = 0;
+        driveFileId = "";
+        driveReady = false;
+        driveRemembered = false;
+        pendingTokenRequest = null;
+        localStorage.removeItem(driveConnectionKey);
+        if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
+          google.accounts.oauth2.revoke(tokenToRevoke, () => {});
+        }
+        updateSyncUi();
+        showToast("已登出 Google Drive，同步已暫停");
       }
 
       function scheduleDriveSync() {
-        if (!driveReady) return;
+        if (!driveReady && !driveRemembered) return;
         clearTimeout(syncTimer);
         syncTimer = setTimeout(() => syncToDrive(false), 1200);
       }
@@ -1878,8 +1934,11 @@
       }
 
       async function syncToDrive(force) {
-        if (!driveReady || (!syncDirty && !force)) return;
+        if (!driveReady && !driveRemembered && !force) return;
+        if (!syncDirty && !force) return;
         try {
+          const granted = await ensureGoogleAccess(force);
+          if (!granted) return;
           const metadata = { name: driveFileName, parents: ["appDataFolder"] };
           const boundary = `nutri_pace_${Date.now()}`;
           const body = [
@@ -1914,8 +1973,24 @@
           updateSyncUi();
           showToast("已同步到 Google Drive");
         } catch (error) {
+          accessToken = "";
+          accessTokenExpiresAt = 0;
+          driveReady = false;
           setSyncStatus("Drive 同步失敗", "本機資料已保存，網路或授權恢復後可再按立即同步。");
           showToast("Drive 同步失敗，本機資料已保存");
+          updateSyncUi();
+        }
+      }
+
+      async function autoReconnectDrive() {
+        if (!driveRemembered || driveReady) return;
+        try {
+          const granted = await ensureGoogleAccess(false);
+          if (!granted) return;
+          await loadFromDrive();
+        } catch {
+          driveReady = false;
+          updateSyncUi();
         }
       }
 
@@ -3242,12 +3317,16 @@
 
       document.getElementById("connectGoogle").addEventListener("click", requestGoogleAccess);
       document.getElementById("syncNow").addEventListener("click", () => syncToDrive(true));
+      document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
           navigator.serviceWorker.register("sw.js").catch(() => {});
         });
       }
-      window.addEventListener("load", updateSyncUi);
+      window.addEventListener("load", () => {
+        updateSyncUi();
+        setTimeout(autoReconnectDrive, 800);
+      });
       render();
     </script>
   </body>
