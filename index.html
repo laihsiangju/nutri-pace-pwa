@@ -1773,7 +1773,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v17";
+      const appVersion = "v18";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2633,6 +2633,9 @@
       function renderPlanCards(plans, options) {
         return plans
           .map((plan, index) => {
+            const planFoods = plan.items
+              .map((name) => plan.foods?.find((food) => food.name === name) || findFood(name))
+              .filter(Boolean);
             const totals = plan.totals || plan.items.reduce(
               (acc, name) => {
                 const food = findFood(name);
@@ -2653,16 +2656,30 @@
                 <table>
                   <thead>
                     <tr>
-                      <th>組合</th>
+                      <th>食物</th>
+                      <th>建議份量</th>
                       <th class="num">kcal</th>
                       <th class="num">蛋白</th>
                     </tr>
                   </thead>
                   <tbody>
+                    ${planFoods
+                      .map(
+                        (food) => `
+                          <tr>
+                            <td>${escapeHtml(food.name)}</td>
+                            <td>${escapeHtml(suggestServingText(food))}</td>
+                            <td class="num">${Math.round(food.cal)}</td>
+                            <td class="num">${formatProtein(food.protein)}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
                     <tr>
-                      <td>${escapeHtml(plan.items.join(" + "))}</td>
-                      <td class="num">${Math.round(totals.cal)}</td>
-                      <td class="num">${formatProtein(totals.protein)}</td>
+                      <td><strong>合計</strong></td>
+                      <td>${planFoods.length} 項</td>
+                      <td class="num"><strong>${Math.round(totals.cal)}</strong></td>
+                      <td class="num"><strong>${formatProtein(totals.protein)}</strong></td>
                     </tr>
                   </tbody>
                 </table>
@@ -2883,11 +2900,49 @@
           .replaceAll("雞蛋", "")
           .replaceAll("牛奶", "")
           .replaceAll("羊奶", "");
-        return /雞|牛|豬|羊|魚|鮭|鮪|蝦|肉|chicken|beef|pork|salmon|tuna|shrimp/.test(name);
+        return /雞胸|雞腿|雞排|雞肉|烤雞|椒麻雞|舒肥雞|牛腱|牛肉|豬肉|羊肉|鮭|鮪|魚|蝦|肉|chicken|beef|pork|salmon|tuna|shrimp/.test(name);
       }
 
-      function hasMultipleMeatProteins(items) {
-        return items.filter(isMeatProtein).length > 1;
+      function isDinnerCompanion(food) {
+        if (isMeatProtein(food)) return false;
+        const name = String(food?.name || "").toLowerCase();
+        return /蔬菜|葉菜|青菜|花椰菜|沙拉|豌豆|豆腐|豆干|毛豆|豆漿|蛋|優格|地瓜|飯|米餅|米飯|藍莓|香蕉|蘋果|芭樂|木瓜|水果|咖啡|沙拉醬|醬/.test(name);
+      }
+
+      function isReasonableDinnerCombo(items) {
+        const meatCount = items.filter(isMeatProtein).length;
+        if (meatCount > 1) return false;
+        if (meatCount === 1) return items.every((food) => isMeatProtein(food) || isDinnerCompanion(food));
+        return true;
+      }
+
+      function suggestServingText(food) {
+        const name = String(food?.name || "");
+        const gramMatch = name.match(/(\d+(?:\.\d+)?)\s*g/i);
+        if (gramMatch) return `約 ${gramMatch[1]}g`;
+        const mlMatch = name.match(/(\d+(?:\.\d+)?)\s*ml/i);
+        if (mlMatch) return `${mlMatch[1]}ml`;
+        if (/蝦/.test(name)) return "約 150g";
+        if (/鮪魚|罐頭/.test(name)) return "約 100g";
+        if (/雞胸|雞肉|雞腿|牛腱|牛肉|豬肉|羊肉|魚|鮭|肉/.test(name)) return "約 100g";
+        if (/茶葉蛋|水煮蛋|溫泉蛋|蛋/.test(name)) return "1顆，約 50g";
+        if (/豆腐半盒|雞蛋豆腐半盒/.test(name)) return "約 150g";
+        if (/豆腐|豆干|毛豆/.test(name)) return "約 100g";
+        if (/沙拉碗|蔬菜餐/.test(name)) return "1盒，約 250g";
+        if (/沙拉醬/.test(name)) return "1盒，約 25g";
+        if (/葉菜|青菜|蔬菜|花椰菜|豌豆/.test(name)) return "約 100g";
+        if (/香蕉/.test(name)) return "約 120g";
+        if (/蘋果/.test(name)) return "約 180g";
+        if (/芭樂|木瓜/.test(name)) return "約 200g";
+        if (/藍莓/.test(name)) return "約 100g";
+        if (/優格/.test(name)) return "約 150g";
+        if (/飯/.test(name)) return "半碗，約 100g";
+        if (/米餅皮/.test(name)) return "1片，約 20g";
+        if (/蛋白片/.test(name)) return "1盒，約 150g";
+        if (/增肌蛋白餐/.test(name)) return "1盒，約 450g";
+        if (/燕麥香蕉蛋糕/.test(name)) return "1盒，約 180g";
+        if (/豆漿|高蛋白飲/.test(name)) return "1瓶";
+        return "1份";
       }
 
       function scoreDinnerCombinations(foodPool, calLeft, proteinLeft, seed = 0) {
@@ -2920,16 +2975,16 @@
           combosToScore.push([candidateFoods[i]]);
           for (let j = i + 1; j < candidateFoods.length; j += 1) {
             const twoItemCombo = [candidateFoods[i], candidateFoods[j]];
-            if (!hasMultipleMeatProteins(twoItemCombo)) combosToScore.push(twoItemCombo);
+            if (isReasonableDinnerCombo(twoItemCombo)) combosToScore.push(twoItemCombo);
             for (let k = j + 1; k < candidateFoods.length; k += 1) {
               const threeItemCombo = [candidateFoods[i], candidateFoods[j], candidateFoods[k]];
-              if (!hasMultipleMeatProteins(threeItemCombo)) combosToScore.push(threeItemCombo);
+              if (isReasonableDinnerCombo(threeItemCombo)) combosToScore.push(threeItemCombo);
             }
           }
         }
 
         return combosToScore
-          .filter((items) => !hasMultipleMeatProteins(items))
+          .filter(isReasonableDinnerCombo)
           .map((items) => {
             const totals = planTotals(items);
             const proteinGap = Math.max(0, targetProtein - totals.protein);
