@@ -1750,7 +1750,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v15";
+      const appVersion = "v16";
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
       const bodyMetricsCleanupVersion = 2;
@@ -2842,6 +2842,19 @@
         return value - Math.floor(value);
       }
 
+      function isMeatProtein(food) {
+        const name = String(food?.name || "")
+          .toLowerCase()
+          .replaceAll("雞蛋", "")
+          .replaceAll("牛奶", "")
+          .replaceAll("羊奶", "");
+        return /雞|牛|豬|羊|魚|鮭|鮪|蝦|肉|chicken|beef|pork|salmon|tuna|shrimp/.test(name);
+      }
+
+      function hasMultipleMeatProteins(items) {
+        return items.filter(isMeatProtein).length > 1;
+      }
+
       function scoreDinnerCombinations(foodPool, calLeft, proteinLeft, seed = 0) {
         const foods = foodPool
           .filter((food) => Number(food.cal) > 0 && Number(food.protein) >= 0)
@@ -2871,14 +2884,17 @@
         for (let i = 0; i < candidateFoods.length; i += 1) {
           combosToScore.push([candidateFoods[i]]);
           for (let j = i + 1; j < candidateFoods.length; j += 1) {
-            combosToScore.push([candidateFoods[i], candidateFoods[j]]);
+            const twoItemCombo = [candidateFoods[i], candidateFoods[j]];
+            if (!hasMultipleMeatProteins(twoItemCombo)) combosToScore.push(twoItemCombo);
             for (let k = j + 1; k < candidateFoods.length; k += 1) {
-              combosToScore.push([candidateFoods[i], candidateFoods[j], candidateFoods[k]]);
+              const threeItemCombo = [candidateFoods[i], candidateFoods[j], candidateFoods[k]];
+              if (!hasMultipleMeatProteins(threeItemCombo)) combosToScore.push(threeItemCombo);
             }
           }
         }
 
         return combosToScore
+          .filter((items) => !hasMultipleMeatProteins(items))
           .map((items) => {
             const totals = planTotals(items);
             const proteinGap = Math.max(0, targetProtein - totals.protein);
