@@ -1967,9 +1967,8 @@
         try {
           const granted = await ensureGoogleAccess(force);
           if (!granted) return;
-          const metadata = { name: driveFileName, parents: ["appDataFolder"] };
           const boundary = `nutri_pace_${Date.now()}`;
-          const body = [
+          const makeMultipartBody = (metadata) => [
             `--${boundary}`,
             "Content-Type: application/json; charset=UTF-8",
             "",
@@ -1986,13 +1985,13 @@
             await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=multipart`, {
               method: "PATCH",
               headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-              body
+              body: makeMultipartBody({ name: driveFileName })
             });
           } else {
             const response = await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
               method: "POST",
               headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-              body
+              body: makeMultipartBody({ name: driveFileName, parents: ["appDataFolder"] })
             });
             const created = await response.json();
             driveFileId = created.id;
