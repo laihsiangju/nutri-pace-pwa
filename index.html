@@ -154,6 +154,13 @@
         font-size: 13px;
       }
 
+      .version-line {
+        margin-top: 3px;
+        color: #767268;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
       .privacy {
         display: inline-flex;
         align-items: center;
@@ -1088,7 +1095,7 @@
 
       .sync-actions {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 8px;
       }
 
@@ -1311,6 +1318,7 @@
           <div>
             <h1>Nutri Pace</h1>
             <p class="subtitle">每日飲食追蹤 + 智能建議</p>
+            <p class="version-line" id="appVersionLabel">版本載入中</p>
           </div>
         </div>
         <div class="privacy"><span class="dot"></span><span id="privacyLabel">本地儲存模式，不上傳第三方</span></div>
@@ -1600,11 +1608,13 @@
             <div class="sync-state">
               <strong id="syncTitle">尚未連線</strong>
               <span id="syncDetail">資料存在 Google Drive 的隱藏 App Data，只有這個 App 會讀寫。</span>
+              <span id="syncVersion">目前版本載入中</span>
             </div>
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
               <button class="tiny-button" id="syncNow" disabled>立即同步</button>
               <button class="tiny-button" id="disconnectGoogle" disabled>登出 Drive</button>
+              <button class="tiny-button" id="reloadApp">重新載入 App</button>
             </div>
           </div>
         </article>
@@ -1688,6 +1698,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
+      const appVersion = "v13";
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
       const bodyMetricsCleanupVersion = 2;
@@ -1724,6 +1735,12 @@
       };
 
       let state = loadState();
+
+      function updateVersionLabels() {
+        const label = `Nutri Pace ${appVersion}`;
+        document.getElementById("appVersionLabel").textContent = label;
+        document.getElementById("syncVersion").textContent = `目前版本：${label}`;
+      }
 
       function cleanLoadedState(saved) {
         const next = saved ? { ...defaultState, ...saved } : structuredClone(defaultState);
@@ -1864,6 +1881,15 @@
         }
         updateSyncUi();
         showToast("已登出 Google Drive，同步已暫停");
+      }
+
+      async function reloadApp() {
+        showToast("正在重新載入 App");
+        if ("serviceWorker" in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((registration) => registration.update().catch(() => {})));
+        }
+        window.location.reload();
       }
 
       function scheduleDriveSync() {
@@ -3345,15 +3371,18 @@
       document.getElementById("connectGoogle").addEventListener("click", requestGoogleAccess);
       document.getElementById("syncNow").addEventListener("click", () => syncToDrive(true));
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
+      document.getElementById("reloadApp").addEventListener("click", reloadApp);
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
           navigator.serviceWorker.register("sw.js").catch(() => {});
         });
       }
       window.addEventListener("load", () => {
+        updateVersionLabels();
         updateSyncUi();
         setTimeout(autoReconnectDrive, 800);
       });
+      updateVersionLabels();
       render();
     </script>
   </body>
