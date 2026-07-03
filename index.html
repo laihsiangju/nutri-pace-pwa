@@ -1043,6 +1043,22 @@
         padding: 0 14px 14px;
       }
 
+      .body-pager {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 740;
+      }
+
+      .pager-actions {
+        display: flex;
+        gap: 8px;
+      }
+
       .report-body {
         display: grid;
         gap: 12px;
@@ -1518,6 +1534,13 @@
               </thead>
               <tbody id="bodyRows"></tbody>
             </table>
+            <div class="body-pager">
+              <span id="bodyPagerInfo">共 0 筆</span>
+              <div class="pager-actions">
+                <button class="tiny-button" id="bodyPrevPage" type="button">上一頁</button>
+                <button class="tiny-button" id="bodyNextPage" type="button">下一頁</button>
+              </div>
+            </div>
           </div>
         </article>
       </section>
@@ -1750,7 +1773,8 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v16";
+      const appVersion = "v17";
+      const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
       const bodyMetricsCleanupVersion = 2;
@@ -1781,6 +1805,7 @@
         bodyMetricsCleanupVersion,
         dinnerShuffle: 0,
         outsideDinnerShuffle: 0,
+        bodyMetricsPage: 1,
         currentView: "home",
         selectedMeal: "breakfast",
         bodyMetrics: [],
@@ -2713,9 +2738,12 @@
           `
           : `<div class="empty">尚未有身體紀錄</div>`;
 
-        const rows = sortedBodyMetrics()
-          .slice(-6)
-          .reverse()
+        const allMetricsDesc = sortedBodyMetrics().reverse();
+        const pageCount = Math.max(1, Math.ceil(allMetricsDesc.length / bodyMetricsPageSize));
+        state.bodyMetricsPage = Math.min(Math.max(Number(state.bodyMetricsPage) || 1, 1), pageCount);
+        const pageStart = (state.bodyMetricsPage - 1) * bodyMetricsPageSize;
+        const pageMetrics = allMetricsDesc.slice(pageStart, pageStart + bodyMetricsPageSize);
+        const rows = pageMetrics
           .map((item) => {
             const metric = enrichMetric(item);
             return `
@@ -2730,6 +2758,13 @@
           .join("");
         document.getElementById("bodyRows").innerHTML =
           rows || `<tr><td colspan="4"><div class="empty">輸入第一筆後會開始追蹤</div></td></tr>`;
+        const visibleStart = allMetricsDesc.length ? pageStart + 1 : 0;
+        const visibleEnd = Math.min(pageStart + bodyMetricsPageSize, allMetricsDesc.length);
+        document.getElementById("bodyPagerInfo").textContent = allMetricsDesc.length
+          ? `第 ${state.bodyMetricsPage} / ${pageCount} 頁，顯示 ${visibleStart}-${visibleEnd} 筆，共 ${allMetricsDesc.length} 筆`
+          : "共 0 筆";
+        document.getElementById("bodyPrevPage").disabled = state.bodyMetricsPage <= 1;
+        document.getElementById("bodyNextPage").disabled = state.bodyMetricsPage >= pageCount;
       }
 
       function renderBodyReport() {
@@ -3207,6 +3242,7 @@
         if (existing >= 0) state.bodyMetrics[existing] = metric;
         else state.bodyMetrics.push(metric);
         state.bodyMetrics.sort((a, b) => a.date.localeCompare(b.date));
+        state.bodyMetricsPage = 1;
         showToast(messagePrefix || `${metric.date} 身體紀錄已儲存`);
         render();
         return true;
@@ -3477,6 +3513,17 @@
         if (!saveBodyMetric(metric)) {
           showToast("請完整填入日期、體重、體脂與脂肪數據");
         }
+      });
+
+      document.getElementById("bodyPrevPage").addEventListener("click", () => {
+        state.bodyMetricsPage = Math.max(1, (Number(state.bodyMetricsPage) || 1) - 1);
+        renderBodyMetrics();
+      });
+
+      document.getElementById("bodyNextPage").addEventListener("click", () => {
+        const pageCount = Math.max(1, Math.ceil(sortedBodyMetrics().length / bodyMetricsPageSize));
+        state.bodyMetricsPage = Math.min(pageCount, (Number(state.bodyMetricsPage) || 1) + 1);
+        renderBodyMetrics();
       });
 
       document.getElementById("updateBodyBaseline").addEventListener("click", () => {
