@@ -1043,6 +1043,15 @@
         padding: 0 14px 14px;
       }
 
+      .body-table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .body-table-wrap table {
+        min-width: 620px;
+      }
+
       .body-pager {
         display: flex;
         align-items: center;
@@ -1531,7 +1540,6 @@
                   <th class="num">體脂%</th>
                   <th class="num">皮下脂肪%</th>
                   <th class="num">內臟脂肪</th>
-                  <th class="num">脂肪量</th>
                   <th class="num">瘦體重</th>
                 </tr>
               </thead>
@@ -1777,7 +1785,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v23";
+      const appVersion = "v24";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2875,14 +2883,13 @@
                 <td class="num">${formatPct(metric.bodyFat)}</td>
                 <td class="num">${formatPct(metric.subcutaneousFat)}</td>
                 <td class="num">${roundOne(metric.visceralFat)}</td>
-                <td class="num">${formatKg(metric.fatMass)}</td>
                 <td class="num">${formatKg(metric.leanMass)}</td>
               </tr>
             `;
           })
           .join("");
         document.getElementById("bodyRows").innerHTML =
-          rows || `<tr><td colspan="7"><div class="empty">輸入第一筆後會開始追蹤</div></td></tr>`;
+          rows || `<tr><td colspan="6"><div class="empty">輸入第一筆後會開始追蹤</div></td></tr>`;
         const visibleStart = allMetricsDesc.length ? pageStart + 1 : 0;
         const visibleEnd = Math.min(pageStart + bodyMetricsPageSize, allMetricsDesc.length);
         document.getElementById("bodyPagerInfo").textContent = allMetricsDesc.length
