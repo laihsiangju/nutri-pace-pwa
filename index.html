@@ -1057,8 +1057,11 @@
         position: sticky;
         left: 0;
         z-index: 2;
-        width: 96px;
-        min-width: 96px;
+        width: 54px;
+        min-width: 54px;
+        padding-left: 4px;
+        padding-right: 4px;
+        text-align: center;
         background: #fffdf8;
         box-shadow: 8px 0 12px rgba(52, 50, 43, 0.08);
       }
@@ -1801,7 +1804,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v25";
+      const appVersion = "v26";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2894,7 +2897,7 @@
             const metric = enrichMetric(item);
             return `
               <tr>
-                <td>${metric.date}</td>
+                <td title="${metric.date}">${formatDateShort(metric.date)}</td>
                 <td class="num">${formatKg(metric.weight)}</td>
                 <td class="num">${formatPct(metric.bodyFat)}</td>
                 <td class="num">${formatPct(metric.subcutaneousFat)}</td>
