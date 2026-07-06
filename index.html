@@ -1567,6 +1567,7 @@
             <div class="body-pager">
               <span id="bodyPagerInfo">共 0 筆</span>
               <div class="pager-actions">
+                <button class="tiny-button" id="exportBodyMetrics" type="button">匯出紀錄</button>
                 <button class="tiny-button" id="bodyPrevPage" type="button">上一頁</button>
                 <button class="tiny-button" id="bodyNextPage" type="button">下一頁</button>
               </div>
@@ -1804,7 +1805,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v26";
+      const appVersion = "v27";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2481,6 +2482,11 @@
         return `${date.getMonth() + 1}/${date.getDate()}`;
       }
 
+      function csvCell(value) {
+        const text = value === undefined || value === null ? "" : String(value);
+        return `"${text.replaceAll('"', '""')}"`;
+      }
+
       function sortedBodyMetrics() {
         return [...(state.bodyMetrics || [])]
           .filter((item) => item.date && Number.isFinite(Number(item.weight)) && Number.isFinite(Number(item.bodyFat)))
@@ -2501,6 +2507,36 @@
           fatMass,
           leanMass: weight - fatMass
         };
+      }
+
+      function exportBodyMetrics() {
+        const metrics = sortedBodyMetrics().map(enrichMetric);
+        if (!metrics.length) {
+          showToast("目前沒有身體紀錄可匯出");
+          return;
+        }
+        const headers = ["日期", "體重kg", "體脂%", "皮下脂肪%", "內臟脂肪", "脂肪量kg", "瘦體重kg", "基礎代謝"];
+        const rows = metrics.map((metric) => [
+          metric.date,
+          roundOne(metric.weight),
+          roundOne(metric.bodyFat),
+          roundOne(metric.subcutaneousFat),
+          roundOne(metric.visceralFat),
+          roundOne(metric.fatMass),
+          roundOne(metric.leanMass),
+          Math.round(metric.bmr)
+        ]);
+        const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+        const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `nutri-pace-body-metrics-${todayKey()}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showToast(`已匯出 ${metrics.length} 筆身體紀錄`);
       }
 
       function latestBodyMetric() {
@@ -3730,6 +3766,8 @@
         state.bodyMetricsPage = Math.min(pageCount, (Number(state.bodyMetricsPage) || 1) + 1);
         renderBodyMetrics();
       });
+
+      document.getElementById("exportBodyMetrics").addEventListener("click", exportBodyMetrics);
 
       document.getElementById("updateBodyBaseline").addEventListener("click", () => {
         const latest = latestBodyMetric();
