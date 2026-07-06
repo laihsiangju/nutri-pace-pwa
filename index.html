@@ -1052,6 +1052,22 @@
         min-width: 620px;
       }
 
+      .body-table-wrap th:first-child,
+      .body-table-wrap td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        width: 96px;
+        min-width: 96px;
+        background: #fffdf8;
+        box-shadow: 8px 0 12px rgba(52, 50, 43, 0.08);
+      }
+
+      .body-table-wrap th:first-child {
+        z-index: 3;
+        background: #f8f6f0;
+      }
+
       .body-pager {
         display: flex;
         align-items: center;
@@ -1785,7 +1801,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v24";
+      const appVersion = "v25";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
