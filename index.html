@@ -651,6 +651,13 @@
         grid-template-columns: minmax(0, 1fr) 82px 82px auto;
       }
 
+      .quick-select-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+      }
+
       .quick-food-hint {
         color: var(--muted);
         font-size: 12px;
@@ -872,6 +879,47 @@
         gap: 8px;
       }
 
+      .combo-editor {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-bottom: 1px solid #e5ded3;
+      }
+
+      .combo-editor-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .combo-draft {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .combo-draft-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 30px;
+        border: 1px solid #ded8cc;
+        border-radius: 999px;
+        background: #fffdf9;
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+
+      .combo-draft-item button {
+        width: 20px;
+        height: 20px;
+        border: 0;
+        border-radius: 50%;
+        background: #f0ebe2;
+        color: var(--muted);
+      }
+
       .combo {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -895,6 +943,13 @@
         margin-top: 3px;
         color: var(--muted);
         font-size: 12px;
+      }
+
+      .combo-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 6px;
       }
 
       .tiny-button {
@@ -1310,7 +1365,9 @@
         }
 
         .meal-target-row,
-        .quick-food-row {
+        .quick-food-row,
+        .quick-select-row,
+        .combo-editor-row {
           grid-template-columns: 1fr;
         }
 
@@ -1610,6 +1667,18 @@
           <div class="panel-header">
             <div class="panel-title"><span class="mini-icon">★</span>常用餐組合</div>
           </div>
+          <div class="combo-editor">
+            <input class="field" id="comboName" placeholder="組合名稱，例如：豆漿 + 雞胸 + 蛋" />
+            <div class="combo-editor-row">
+              <select class="field" id="comboFoodSelect"></select>
+              <button class="tiny-button" id="addComboFood" type="button">加入食物</button>
+            </div>
+            <div class="combo-draft" id="comboDraftItems"></div>
+            <div class="combo-actions">
+              <button class="tiny-button" id="saveCombo" type="button">儲存組合</button>
+              <button class="tiny-button" id="cancelComboEdit" type="button">清空</button>
+            </div>
+          </div>
           <div class="combo-list" id="comboList"></div>
         </article>
       </section>
@@ -1761,7 +1830,7 @@
         "經期": "可選溫熱、含鐵與高蛋白食物，熱量不必壓太低。若疲勞明顯，晚餐保留足夠碳水與水分。"
       };
 
-      const combos = [
+      const defaultCombos = [
         {
           name: "沙拉碗 + 椒麻雞胸 + 茶葉蛋",
           meal: "lunch",
@@ -1805,7 +1874,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v27";
+      const appVersion = "v28";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -1824,6 +1893,8 @@
       let syncInFlight = false;
       let pendingTokenRequest = null;
       let editingFoodRows = new Set();
+      let editingComboIndex = -1;
+      let comboDraftItems = [];
       let pullStartY = 0;
       let pullDistance = 0;
       let pullTracking = false;
@@ -1843,6 +1914,7 @@
         bodyMetricsPage: 1,
         currentView: "home",
         selectedMeal: "breakfast",
+        combos: structuredClone(defaultCombos),
         bodyMetrics: [],
         entries: {
           breakfast: [],
@@ -1875,6 +1947,7 @@
         next.entries = { ...defaultState.entries, ...(saved.entries || {}) };
         next.personalFoods = Array.isArray(saved.personalFoods) ? saved.personalFoods : [];
         next.hiddenFoods = Array.isArray(saved.hiddenFoods) ? saved.hiddenFoods : [];
+        next.combos = Array.isArray(saved.combos) ? saved.combos : structuredClone(defaultCombos);
         next.dataUpdatedAt = saved.dataUpdatedAt || "";
         return next;
       }
@@ -1886,7 +1959,13 @@
 
       function hasMeaningfulLocalData(localState) {
         const entryCount = meals.reduce((sum, meal) => sum + (localState.entries?.[meal.id]?.length || 0), 0);
-        return Boolean(entryCount || localState.bodyMetrics?.length || localState.personalFoods?.length || localState.hiddenFoods?.length);
+        return Boolean(
+          entryCount ||
+            localState.bodyMetrics?.length ||
+            localState.personalFoods?.length ||
+            localState.hiddenFoods?.length ||
+            localState.combos?.length
+        );
       }
 
       function mergeByName(driveItems = [], localItems = []) {
@@ -1928,6 +2007,7 @@
           entries: mergeMealEntries(driveState.entries, localState.entries),
           personalFoods: mergeByName(driveState.personalFoods, localState.personalFoods),
           hiddenFoods: Array.from(new Set([...(driveState.hiddenFoods || []), ...(localState.hiddenFoods || [])])),
+          combos: mergeByName(driveState.combos, localState.combos),
           bodyMetrics: mergeBodyMetrics(driveState.bodyMetrics, localState.bodyMetrics),
           bodyMetricsCleanupVersion
         };
@@ -2663,10 +2743,41 @@
         );
       }
 
+      function comboItemsText(combo) {
+        return (combo.items || []).join("、");
+      }
+
+      function resetComboEditor() {
+        editingComboIndex = -1;
+        comboDraftItems = [];
+        const nameInput = document.getElementById("comboName");
+        if (nameInput) nameInput.value = "";
+      }
+
+      function loadComboEditor(index) {
+        const combo = state.combos?.[Number(index)];
+        if (!combo) return;
+        editingComboIndex = Number(index);
+        comboDraftItems = [...(combo.items || [])];
+        document.getElementById("comboName").value = combo.name;
+        showToast(`${combo.name} 可編輯`);
+        renderCombos();
+      }
+
       function renderMeals() {
         const mealList = document.getElementById("mealList");
         const selectedMeal = meals.find((meal) => meal.id === state.selectedMeal) || meals[0];
         const selectedTotal = mealTotals(selectedMeal.id);
+        const foods = allFoods();
+        const comboOptions = (state.combos || [])
+          .map((combo, index) => {
+            const total = comboTotals(combo);
+            return `<option value="${index}">${escapeHtml(combo.name)} (${Math.round(total.cal)} kcal / ${formatProtein(total.protein)})</option>`;
+          })
+          .join("");
+        const foodOptions = foods
+          .map((food) => `<option value="${escapeHtml(food.name)}">${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</option>`)
+          .join("");
         const rows = meals
           .flatMap((meal) =>
             state.entries[meal.id].map((name, index) => {
@@ -2714,31 +2825,18 @@
               </div>
               <div class="quick-food-hint" id="quickFoodEstimateHint">熱量或蛋白質空白或為 0 時，系統會自動填入最接近的估算值。</div>
               <div class="quick-food-hint">常用餐組合</div>
-              <div class="food-grid combined-food-grid">
-                ${combos
-                  .map((combo, index) => {
-                    const total = comboTotals(combo);
-                    return `
-                      <button class="food-chip combo-chip" data-combo-selected="${index}">
-                        <strong>${escapeHtml(combo.name)}</strong>
-                        <span>${Math.round(total.cal)} kcal · ${formatProtein(total.protein)}</span>
-                      </button>
-                    `;
-                  })
-                  .join("")}
+              <div class="quick-select-row">
+                <select class="field" id="quickComboSelect">
+                  ${comboOptions || `<option value="">尚未建立常用餐組合</option>`}
+                </select>
+                <button class="tiny-button" id="quickAddCombo" type="button" ${comboOptions ? "" : "disabled"}>加入組合</button>
               </div>
               <div class="quick-food-hint">單項食物</div>
-              <div class="food-grid combined-food-grid">
-                ${allFoods()
-                  .map(
-                      (food) => `
-                      <button class="food-chip" data-add-selected data-food="${encodeURIComponent(food.name)}">
-                        <strong>${escapeHtml(food.name)}</strong>
-                        <span>${Math.round(food.cal)} kcal · ${formatProtein(food.protein)}</span>
-                      </button>
-                    `
-                  )
-                  .join("")}
+              <div class="quick-select-row">
+                <select class="field" id="quickFoodSelect">
+                  ${foodOptions}
+                </select>
+                <button class="tiny-button" id="quickAddSelectedFood" type="button">加入食物</button>
               </div>
             </div>
             <div class="meal-items">
@@ -3211,20 +3309,47 @@
       }
 
       function renderCombos() {
-        document.getElementById("comboList").innerHTML = combos
+        const foods = allFoods();
+        const foodOptions = foods
+          .map((food) => `<option value="${escapeHtml(food.name)}">${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</option>`)
+          .join("");
+        const foodSelect = document.getElementById("comboFoodSelect");
+        if (foodSelect) foodSelect.innerHTML = foodOptions;
+
+        document.getElementById("comboDraftItems").innerHTML = comboDraftItems.length
+          ? comboDraftItems
+              .map(
+                (name, index) => `
+                  <span class="combo-draft-item">
+                    ${escapeHtml(name)}
+                    <button type="button" data-remove-combo-draft="${index}" aria-label="移除${escapeHtml(name)}">×</button>
+                  </span>
+                `
+              )
+              .join("")
+          : `<span class="quick-food-hint">從下拉選單加入食物，組合至少需要 1 個項目。</span>`;
+
+        document.getElementById("saveCombo").textContent = editingComboIndex >= 0 ? "儲存編輯" : "儲存組合";
+
+        document.getElementById("comboList").innerHTML = (state.combos || [])
           .map((combo, index) => {
             const totals = comboTotals(combo);
             return `
               <div class="combo">
                 <div>
-                  <strong>${combo.name}</strong>
+                  <strong>${escapeHtml(combo.name)}</strong>
+                  <span>${escapeHtml(comboItemsText(combo))}</span>
                   <span>${Math.round(totals.cal)} kcal · ${formatProtein(totals.protein)}</span>
                 </div>
-                <button class="tiny-button" data-combo="${index}">加入目前餐別</button>
+                <div class="combo-actions">
+                  <button class="tiny-button" data-combo="${index}">加入目前餐別</button>
+                  <button class="tiny-button" data-edit-combo="${index}">編輯</button>
+                  <button class="tiny-button" data-delete-combo="${index}">刪除</button>
+                </div>
               </div>
             `;
           })
-          .join("");
+          .join("") || `<div class="empty">尚未建立常用餐組合</div>`;
       }
 
       function renderTrend() {
@@ -3340,12 +3465,20 @@
         meals.forEach((meal) => {
           state.entries[meal.id] = state.entries[meal.id].map((name) => (name === oldName ? newName : name));
         });
+        state.combos = (state.combos || []).map((combo) => ({
+          ...combo,
+          items: (combo.items || []).map((name) => (name === oldName ? newName : name))
+        }));
       }
 
       function removeFoodFromEntries(foodName) {
         meals.forEach((meal) => {
           state.entries[meal.id] = state.entries[meal.id].filter((name) => name !== foodName);
         });
+        state.combos = (state.combos || [])
+          .map((combo) => ({ ...combo, items: (combo.items || []).filter((name) => name !== foodName) }))
+          .filter((combo) => combo.items.length);
+        comboDraftItems = comboDraftItems.filter((name) => name !== foodName);
       }
 
       function clearFoodForm() {
@@ -3451,6 +3584,10 @@
       }
 
       function addFoodToMeal(mealId, foodName) {
+        if (!foodName) {
+          showToast("請先選擇食物");
+          return;
+        }
         if (!state.entries[mealId]) state.entries[mealId] = [];
         state.entries[mealId].push(foodName);
         markDataChanged();
@@ -3496,12 +3633,54 @@
       }
 
       function addComboToSelectedMeal(comboIndex) {
-        const selected = combos[Number(comboIndex)];
+        const selected = state.combos?.[Number(comboIndex)];
+        if (!selected) return;
         const mealId = state.selectedMeal || "breakfast";
         const mealLabel = meals.find((meal) => meal.id === mealId)?.label || "目前餐別";
         state.entries[mealId].push(...selected.items);
         markDataChanged();
         showToast(`${selected.name} 已加入${mealLabel}`);
+        render();
+      }
+
+      function addFoodToComboDraft(foodName) {
+        if (!foodName) return;
+        comboDraftItems.push(foodName);
+        renderCombos();
+      }
+
+      function saveComboFromEditor() {
+        const name = document.getElementById("comboName").value.trim();
+        if (!name) {
+          showToast("請輸入組合名稱");
+          return;
+        }
+        if (!comboDraftItems.length) {
+          showToast("請至少加入 1 個食物");
+          return;
+        }
+        const combo = { name, items: [...comboDraftItems] };
+        state.combos = Array.isArray(state.combos) ? state.combos : [];
+        const duplicate = state.combos.findIndex((item, index) => item.name === name && index !== editingComboIndex);
+        if (duplicate >= 0) {
+          showToast("已有同名組合，請換一個名稱");
+          return;
+        }
+        if (editingComboIndex >= 0) state.combos[editingComboIndex] = combo;
+        else state.combos.push(combo);
+        resetComboEditor();
+        markDataChanged();
+        showToast(`${name} 已儲存`);
+        render();
+      }
+
+      function deleteCombo(index) {
+        const combo = state.combos?.[Number(index)];
+        if (!combo) return;
+        state.combos.splice(Number(index), 1);
+        resetComboEditor();
+        markDataChanged();
+        showToast(`${combo.name} 已刪除`);
         render();
       }
 
@@ -3538,9 +3717,15 @@
           return;
         }
 
-        const selectedAdd = event.target.closest("[data-add-selected]");
+        const selectedAdd = event.target.closest("#quickAddSelectedFood");
         if (selectedAdd) {
-          addFoodToMeal(state.selectedMeal || "breakfast", decodeURIComponent(selectedAdd.dataset.food));
+          addFoodToMeal(state.selectedMeal || "breakfast", document.getElementById("quickFoodSelect").value);
+          return;
+        }
+
+        const quickCombo = event.target.closest("#quickAddCombo");
+        if (quickCombo) {
+          addComboToSelectedMeal(document.getElementById("quickComboSelect").value);
           return;
         }
 
@@ -3572,6 +3757,44 @@
         const selectedCombo = event.target.closest("[data-combo-selected]");
         if (selectedCombo) {
           addComboToSelectedMeal(selectedCombo.dataset.comboSelected);
+          return;
+        }
+
+        const addComboFood = event.target.closest("#addComboFood");
+        if (addComboFood) {
+          addFoodToComboDraft(document.getElementById("comboFoodSelect").value);
+          return;
+        }
+
+        const removeComboDraft = event.target.closest("[data-remove-combo-draft]");
+        if (removeComboDraft) {
+          comboDraftItems.splice(Number(removeComboDraft.dataset.removeComboDraft), 1);
+          renderCombos();
+          return;
+        }
+
+        const saveCombo = event.target.closest("#saveCombo");
+        if (saveCombo) {
+          saveComboFromEditor();
+          return;
+        }
+
+        const cancelComboEdit = event.target.closest("#cancelComboEdit");
+        if (cancelComboEdit) {
+          resetComboEditor();
+          renderCombos();
+          return;
+        }
+
+        const editCombo = event.target.closest("[data-edit-combo]");
+        if (editCombo) {
+          loadComboEditor(editCombo.dataset.editCombo);
+          return;
+        }
+
+        const deleteComboButton = event.target.closest("[data-delete-combo]");
+        if (deleteComboButton) {
+          deleteCombo(deleteComboButton.dataset.deleteCombo);
           return;
         }
 
