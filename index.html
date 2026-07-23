@@ -658,6 +658,71 @@
         align-items: center;
       }
 
+      .multi-select {
+        position: relative;
+        min-width: 0;
+      }
+
+      .multi-select summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 36px;
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .multi-select summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .multi-select summary::after {
+        content: "▾";
+        color: var(--muted);
+        transition: transform 0.16s ease;
+      }
+
+      .multi-select[open] summary::after {
+        transform: rotate(180deg);
+      }
+
+      .multi-select-options {
+        position: absolute;
+        z-index: 20;
+        top: calc(100% + 5px);
+        right: 0;
+        left: 0;
+        display: grid;
+        max-height: 240px;
+        overflow-y: auto;
+        border: 1px solid #d7d0c5;
+        border-radius: var(--radius);
+        background: #fffdf9;
+        box-shadow: 0 12px 30px rgba(52, 50, 43, 0.16);
+        padding: 6px;
+      }
+
+      .multi-select-option {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
+        padding: 8px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .multi-select-option:hover {
+        background: #f3f0e8;
+      }
+
+      .multi-select-option input {
+        margin-top: 2px;
+      }
+
       .quick-food-hint {
         color: var(--muted);
         font-size: 12px;
@@ -1874,7 +1939,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v28";
+      const appVersion = "v29";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2772,11 +2837,11 @@
         const comboOptions = (state.combos || [])
           .map((combo, index) => {
             const total = comboTotals(combo);
-            return `<option value="${index}">${escapeHtml(combo.name)} (${Math.round(total.cal)} kcal / ${formatProtein(total.protein)})</option>`;
+            return `<label class="multi-select-option"><input type="checkbox" data-multi-combo value="${index}" /><span>${escapeHtml(combo.name)} (${Math.round(total.cal)} kcal / ${formatProtein(total.protein)})</span></label>`;
           })
           .join("");
         const foodOptions = foods
-          .map((food) => `<option value="${escapeHtml(food.name)}">${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</option>`)
+          .map((food) => `<label class="multi-select-option"><input type="checkbox" data-multi-food value="${escapeHtml(food.name)}" /><span>${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</span></label>`)
           .join("");
         const rows = meals
           .flatMap((meal) =>
@@ -2826,16 +2891,20 @@
               <div class="quick-food-hint" id="quickFoodEstimateHint">熱量或蛋白質空白或為 0 時，系統會自動填入最接近的估算值。</div>
               <div class="quick-food-hint">常用餐組合</div>
               <div class="quick-select-row">
-                <select class="field" id="quickComboSelect">
-                  ${comboOptions || `<option value="">尚未建立常用餐組合</option>`}
-                </select>
+                <details class="multi-select" id="quickComboSelect">
+                  <summary class="field" data-multi-summary data-placeholder="選擇常用餐組合（可多選）">選擇常用餐組合（可多選）</summary>
+                  <div class="multi-select-options">
+                    ${comboOptions || `<span class="quick-food-hint">尚未建立常用餐組合</span>`}
+                  </div>
+                </details>
                 <button class="tiny-button" id="quickAddCombo" type="button" ${comboOptions ? "" : "disabled"}>加入組合</button>
               </div>
               <div class="quick-food-hint">單項食物</div>
               <div class="quick-select-row">
-                <select class="field" id="quickFoodSelect">
-                  ${foodOptions}
-                </select>
+                <details class="multi-select" id="quickFoodSelect">
+                  <summary class="field" data-multi-summary data-placeholder="選擇單項食物（可多選）">選擇單項食物（可多選）</summary>
+                  <div class="multi-select-options">${foodOptions}</div>
+                </details>
                 <button class="tiny-button" id="quickAddSelectedFood" type="button">加入食物</button>
               </div>
             </div>
@@ -3595,6 +3664,23 @@
         render();
       }
 
+      function checkedValues(containerId, selector) {
+        return Array.from(document.querySelectorAll(`#${containerId} ${selector}:checked`), (input) => input.value);
+      }
+
+      function addFoodsToMeal(mealId, foodNames) {
+        if (!foodNames.length) {
+          showToast("請至少選擇 1 項食物");
+          return;
+        }
+        if (!state.entries[mealId]) state.entries[mealId] = [];
+        state.entries[mealId].push(...foodNames);
+        markDataChanged();
+        const mealLabel = meals.find((meal) => meal.id === mealId)?.label || "目前餐別";
+        showToast(`已將 ${foodNames.length} 項食物加入${mealLabel}`);
+        render();
+      }
+
       function saveBodyMetric(metric, messagePrefix = "") {
         metric.bmr = estimateBmr(metric.weight);
         const valid =
@@ -3640,6 +3726,20 @@
         state.entries[mealId].push(...selected.items);
         markDataChanged();
         showToast(`${selected.name} 已加入${mealLabel}`);
+        render();
+      }
+
+      function addCombosToSelectedMeal(comboIndexes) {
+        const selected = comboIndexes.map((index) => state.combos?.[Number(index)]).filter(Boolean);
+        if (!selected.length) {
+          showToast("請至少選擇 1 個常用餐組合");
+          return;
+        }
+        const mealId = state.selectedMeal || "breakfast";
+        const mealLabel = meals.find((meal) => meal.id === mealId)?.label || "目前餐別";
+        state.entries[mealId].push(...selected.flatMap((combo) => combo.items || []));
+        markDataChanged();
+        showToast(`已將 ${selected.length} 個組合加入${mealLabel}`);
         render();
       }
 
@@ -3719,13 +3819,13 @@
 
         const selectedAdd = event.target.closest("#quickAddSelectedFood");
         if (selectedAdd) {
-          addFoodToMeal(state.selectedMeal || "breakfast", document.getElementById("quickFoodSelect").value);
+          addFoodsToMeal(state.selectedMeal || "breakfast", checkedValues("quickFoodSelect", "[data-multi-food]"));
           return;
         }
 
         const quickCombo = event.target.closest("#quickAddCombo");
         if (quickCombo) {
-          addComboToSelectedMeal(document.getElementById("quickComboSelect").value);
+          addCombosToSelectedMeal(checkedValues("quickComboSelect", "[data-multi-combo]"));
           return;
         }
 
@@ -3876,6 +3976,16 @@
       document.getElementById("openMenu").addEventListener("click", openMenu);
       document.getElementById("closeMenu").addEventListener("click", closeMenu);
       document.getElementById("closeMenuOverlay").addEventListener("click", closeMenu);
+
+      document.addEventListener("change", (event) => {
+        const checkbox = event.target.closest("[data-multi-combo], [data-multi-food]");
+        if (!checkbox) return;
+        const picker = checkbox.closest(".multi-select");
+        const summary = picker?.querySelector("[data-multi-summary]");
+        if (!summary) return;
+        const count = picker.querySelectorAll('input[type="checkbox"]:checked').length;
+        summary.textContent = count ? `已選擇 ${count} 項` : summary.dataset.placeholder;
+      });
 
       document.addEventListener("focusout", (event) => {
         if (event.target.closest("#quickFoodName, #quickFoodCal, #quickFoodProtein")) {
