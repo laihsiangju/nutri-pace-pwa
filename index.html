@@ -1939,10 +1939,11 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v29";
+      const appVersion = "v30";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
+      const driveDailyPromptKey = "nutri-pace-drive-daily-prompt";
       const lastSyncKey = "nutri-pace-last-sync-at";
       const bodyMetricsCleanupVersion = 2;
       const driveFileName = appConfig.driveFileName || "nutri-pace-data.json";
@@ -1957,6 +1958,7 @@
       let syncTimer = 0;
       let syncInFlight = false;
       let pendingTokenRequest = null;
+      let dailyReconnectInFlight = false;
       let editingFoodRows = new Set();
       let editingComboIndex = -1;
       let comboDraftItems = [];
@@ -2020,6 +2022,7 @@
       function markDataChanged() {
         state.dataUpdatedAt = new Date().toISOString();
         syncDirty = true;
+        reconnectDriveOnFirstChangeToday();
       }
 
       function hasMeaningfulLocalData(localState) {
@@ -2125,11 +2128,11 @@
         connectButton.disabled = false;
         syncButton.disabled = false;
         disconnectButton.disabled = !driveRemembered && !driveReady;
-        connectButton.textContent = driveReady || driveRemembered ? "已登入" : "登入 Google";
+        connectButton.textContent = driveReady ? "已登入" : driveRemembered ? "重新連線" : "登入 Google";
         if (driveReady) {
           setSyncStatus("已連線 Google Drive", `資料會同步到隱藏 App Data 的 ${driveFileName}，並保留本機備份。`, "drive");
         } else if (driveRemembered) {
-          setSyncStatus("已記住 Google Drive", "需要同步時會自動續接授權；你也可以按立即同步。", "drive");
+          setSyncStatus("Google Drive 等待重新連線", "本機資料會繼續保存；要同步時請按重新連線或同步最新資料。", "drive");
         } else {
           setSyncStatus("可連線 Google Drive", "登入後會先讀取你的 Drive JSON，再把今天資料同步回去。");
         }
@@ -2159,6 +2162,7 @@
                 driveReady = true;
                 driveRemembered = true;
                 localStorage.setItem(driveConnectionKey, "1");
+                localStorage.setItem(driveDailyPromptKey, todayKey());
                 updateSyncUi();
                 pendingTokenRequest?.resolve(true);
                 pendingTokenRequest = null;
@@ -2178,11 +2182,33 @@
           updateSyncUi();
           return Promise.resolve(true);
         }
+        if (!interactive) return Promise.resolve(false);
         if (!initGoogleClient()) return Promise.resolve(false);
         return new Promise((resolve, reject) => {
           pendingTokenRequest = { resolve, reject };
           tokenClient.requestAccessToken({ prompt: !driveRemembered ? "consent" : "" });
         });
+      }
+
+      function reconnectDriveOnFirstChangeToday() {
+        if (!driveRemembered || hasValidAccessToken() || dailyReconnectInFlight) return;
+        if (!window.google?.accounts?.oauth2) return;
+        const today = todayKey();
+        if (localStorage.getItem(driveDailyPromptKey) === today) return;
+        localStorage.setItem(driveDailyPromptKey, today);
+        dailyReconnectInFlight = true;
+        ensureGoogleAccess(true)
+          .then((granted) => {
+            if (granted) scheduleDriveSync(0);
+          })
+          .catch(() => {
+            driveReady = false;
+            updateSyncUi();
+            setSyncStatus("本機資料已保存", "今天的 Google 重新連線未完成；本日不會再次自動詢問，可隨時手動同步。", "drive");
+          })
+          .finally(() => {
+            dailyReconnectInFlight = false;
+          });
       }
 
       async function requestGoogleAccess() {
@@ -2218,6 +2244,7 @@
         driveRemembered = false;
         pendingTokenRequest = null;
         localStorage.removeItem(driveConnectionKey);
+        localStorage.removeItem(driveDailyPromptKey);
         if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
           google.accounts.oauth2.revoke(tokenToRevoke, () => {});
         }
@@ -2402,7 +2429,12 @@
         syncInFlight = true;
         try {
           const granted = await ensureGoogleAccess(force);
-          if (!granted) return;
+          if (!granted) {
+            driveReady = false;
+            updateSyncUi();
+            setSyncStatus("本機資料已保存", "Google Drive 連線已到期；請在方便時按重新連線或同步最新資料。", "drive");
+            return;
+          }
           const boundary = `nutri_pace_${Date.now()}`;
           const makeMultipartBody = (metadata) => [
             `--${boundary}`,
@@ -2438,9 +2470,12 @@
           setSyncStatus("已同步 Google Drive", `最新資料已寫入隱藏 App Data 的 ${driveFileName}，並保留本機備份。`, "drive");
           showToast("已同步到 Google Drive");
         } catch (error) {
-          accessToken = "";
-          accessTokenExpiresAt = 0;
-          driveReady = false;
+          if (error?.status === 401) {
+            accessToken = "";
+            accessTokenExpiresAt = 0;
+            driveReady = false;
+            updateSyncUi();
+          }
           const detail = describeDriveError(error);
           setSyncStatus("Drive 同步失敗", `${detail} 本機資料已保存。`);
           showToast("Drive 同步失敗，請看同步頁說明");
@@ -2456,14 +2491,7 @@
 
       async function autoReconnectDrive() {
         if (!driveRemembered || driveReady) return;
-        try {
-          const granted = await ensureGoogleAccess(false);
-          if (!granted) return;
-          await loadFromDrive();
-        } catch {
-          driveReady = false;
-          updateSyncUi();
-        }
+        updateSyncUi();
       }
 
       function allFoods() {
