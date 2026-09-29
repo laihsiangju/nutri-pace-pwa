@@ -1939,7 +1939,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v30";
+      const appVersion = "v31";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -1953,6 +1953,8 @@
       let tokenClient = null;
       let driveFileId = "";
       let driveReady = false;
+      let driveLoadedThisSession = false;
+      let driveRevisionsChecked = false;
       let driveRemembered = localStorage.getItem(driveConnectionKey) === "1";
       let syncDirty = false;
       let syncTimer = 0;
@@ -2032,7 +2034,7 @@
             localState.bodyMetrics?.length ||
             localState.personalFoods?.length ||
             localState.hiddenFoods?.length ||
-            localState.combos?.length
+            localState.dataUpdatedAt
         );
       }
 
@@ -2068,15 +2070,16 @@
         if (!hasMeaningfulLocalData(localState)) return driveState;
         const localTime = Date.parse(localState.dataUpdatedAt || "") || 0;
         const driveTime = Date.parse(driveState.dataUpdatedAt || "") || 0;
-        if (driveTime > localTime) return driveState;
-        if (localTime > driveTime) return localState;
+        const localIsNewer = localTime >= driveTime;
+        const newerState = localIsNewer ? localState : driveState;
+        const olderState = localIsNewer ? driveState : localState;
         return {
-          ...localState,
+          ...newerState,
           entries: mergeMealEntries(driveState.entries, localState.entries),
-          personalFoods: mergeByName(driveState.personalFoods, localState.personalFoods),
+          personalFoods: mergeByName(olderState.personalFoods, newerState.personalFoods),
           hiddenFoods: Array.from(new Set([...(driveState.hiddenFoods || []), ...(localState.hiddenFoods || [])])),
-          combos: mergeByName(driveState.combos, localState.combos),
-          bodyMetrics: mergeBodyMetrics(driveState.bodyMetrics, localState.bodyMetrics),
+          combos: mergeByName(olderState.combos, newerState.combos),
+          bodyMetrics: mergeBodyMetrics(olderState.bodyMetrics, newerState.bodyMetrics),
           bodyMetricsCleanupVersion
         };
       }
@@ -2215,7 +2218,8 @@
         try {
           const granted = await ensureGoogleAccess(true);
           if (!granted) return;
-          await loadFromDrive();
+          const loaded = await loadFromDrive();
+          if (!loaded) return;
           await syncToDrive(true);
         } catch {
           setSyncStatus("Google 登入未完成", "請重新按登入 Google，並允許 Drive 權限。");
@@ -2227,7 +2231,8 @@
         try {
           const granted = await ensureGoogleAccess(true);
           if (!granted) return;
-          await loadFromDrive();
+          const loaded = await loadFromDrive();
+          if (!loaded) return;
           await syncToDrive(true);
         } catch {
           setSyncStatus("同步未完成", "請確認兩台裝置都登入同一個 Google 帳號，並允許 Drive 權限。");
@@ -2241,6 +2246,8 @@
         accessTokenExpiresAt = 0;
         driveFileId = "";
         driveReady = false;
+        driveLoadedThisSession = false;
+        driveRevisionsChecked = false;
         driveRemembered = false;
         pendingTokenRequest = null;
         localStorage.removeItem(driveConnectionKey);
@@ -2393,29 +2400,70 @@
         };
       }
 
+      async function recoverBodyMetricsFromDriveRevisions(driveState) {
+        if (!driveFileId || driveRevisionsChecked) return driveState;
+        driveRevisionsChecked = true;
+        try {
+          const params = new URLSearchParams({ pageSize: "20", fields: "revisions(id,modifiedTime)" });
+          const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}/revisions?${params.toString()}`);
+          const payload = await response.json();
+          const revisions = (payload.revisions || [])
+            .sort((a, b) => String(b.modifiedTime || "").localeCompare(String(a.modifiedTime || "")))
+            .slice(0, 12);
+          let bestMetrics = driveState.bodyMetrics || [];
+          for (const revision of revisions) {
+            try {
+              const revisionResponse = await driveFetch(
+                `https://www.googleapis.com/drive/v3/files/${driveFileId}/revisions/${revision.id}?alt=media`
+              );
+              const revisionPayload = await revisionResponse.json();
+              const revisionMetrics = Array.isArray(revisionPayload?.state?.bodyMetrics) ? revisionPayload.state.bodyMetrics : [];
+              if (revisionMetrics.length > bestMetrics.length) bestMetrics = revisionMetrics;
+            } catch {
+              // Some Drive revisions may no longer have downloadable content; continue with the remaining revisions.
+            }
+          }
+          if (bestMetrics.length <= (driveState.bodyMetrics || []).length) return driveState;
+          return {
+            ...driveState,
+            bodyMetrics: mergeBodyMetrics(bestMetrics, driveState.bodyMetrics || [])
+          };
+        } catch {
+          return driveState;
+        }
+      }
+
       async function loadFromDrive() {
         try {
           await findDriveFile();
           if (!driveFileId) {
+            driveLoadedThisSession = true;
             showToast("Drive 尚無資料，會建立新的私人 JSON");
-            return;
+            return true;
           }
           const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
           const payload = await response.json();
           if (payload?.state) {
             const localBeforeMerge = state;
-            const driveState = cleanLoadedState(payload.state);
+            const currentDriveState = cleanLoadedState(payload.state);
+            const driveState = await recoverBodyMetricsFromDriveRevisions(currentDriveState);
             state = mergeDriveState(localBeforeMerge, driveState);
             const localTime = Date.parse(localBeforeMerge.dataUpdatedAt || "") || 0;
             const driveTime = Date.parse(driveState.dataUpdatedAt || "") || 0;
-            syncDirty = localTime > driveTime;
+            const recoveredMetrics = driveState.bodyMetrics.length > currentDriveState.bodyMetrics.length;
+            const mergedLocalMetrics = state.bodyMetrics.length > driveState.bodyMetrics.length;
+            syncDirty = localTime > driveTime || recoveredMetrics || mergedLocalMetrics;
+            driveLoadedThisSession = true;
             render();
-            showToast("已載入最新資料");
+            showToast(recoveredMetrics ? `已從 Drive 修訂版本找回 ${driveState.bodyMetrics.length} 筆身體紀錄` : "已載入最新資料");
+            return true;
           }
+          return false;
         } catch (error) {
           const detail = describeDriveError(error);
           setSyncStatus("Drive 讀取失敗", `${detail} 本機資料仍安全。`);
           showToast("Drive 讀取失敗，請看同步頁說明");
+          return false;
         }
       }
 
@@ -2434,6 +2482,10 @@
             updateSyncUi();
             setSyncStatus("本機資料已保存", "Google Drive 連線已到期；請在方便時按重新連線或同步最新資料。", "drive");
             return;
+          }
+          if (!driveLoadedThisSession) {
+            const loaded = await loadFromDrive();
+            if (!loaded) return;
           }
           const boundary = `nutri_pace_${Date.now()}`;
           const makeMultipartBody = (metadata) => [
