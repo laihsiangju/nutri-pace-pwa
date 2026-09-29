@@ -1826,6 +1826,7 @@
             <div class="sync-actions">
               <button class="tiny-button" id="connectGoogle">登入 Google</button>
               <button class="tiny-button" id="syncNow" disabled>同步最新資料</button>
+              <button class="tiny-button" id="recoverDriveHistory" disabled>尋找遺失紀錄</button>
               <button class="tiny-button" id="disconnectGoogle" disabled>登出 Drive</button>
               <button class="tiny-button" id="reloadApp">重新載入 App</button>
             </div>
@@ -1939,7 +1940,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v31";
+      const appVersion = "v32";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -1952,9 +1953,13 @@
       let accessTokenExpiresAt = 0;
       let tokenClient = null;
       let driveFileId = "";
+      let driveCandidateFiles = [];
       let driveReady = false;
       let driveLoadedThisSession = false;
       let driveRevisionsChecked = false;
+      let lastRecoveryFoundCount = 0;
+      let lastRecoveryRevisionLists = 0;
+      let lastRecoveryDownloadedRevisions = 0;
       let driveRemembered = localStorage.getItem(driveConnectionKey) === "1";
       let syncDirty = false;
       let syncTimer = 0;
@@ -2119,17 +2124,20 @@
       function updateSyncUi() {
         const connectButton = document.getElementById("connectGoogle");
         const syncButton = document.getElementById("syncNow");
+        const recoverButton = document.getElementById("recoverDriveHistory");
         const disconnectButton = document.getElementById("disconnectGoogle");
         updateLastSyncLabel();
         if (!hasGoogleConfig()) {
           connectButton.disabled = true;
           syncButton.disabled = true;
+          recoverButton.disabled = true;
           disconnectButton.disabled = true;
           setSyncStatus("需要設定 Client ID", "先在 app-config.js 填入 Google OAuth Client ID；目前仍使用手機/瀏覽器本地儲存。");
           return;
         }
         connectButton.disabled = false;
         syncButton.disabled = false;
+        recoverButton.disabled = false;
         disconnectButton.disabled = !driveRemembered && !driveReady;
         connectButton.textContent = driveReady ? "已登入" : driveRemembered ? "重新連線" : "登入 Google";
         if (driveReady) {
@@ -2240,11 +2248,58 @@
         }
       }
 
+      async function recoverDriveHistory() {
+        const button = document.getElementById("recoverDriveHistory");
+        button.disabled = true;
+        setSyncStatus("正在尋找遺失紀錄", "正在檢查所有同名 App Data 檔案與最近的 Drive 修訂版本，請勿關閉頁面。", "drive");
+        try {
+          const granted = await ensureGoogleAccess(true);
+          if (!granted) return;
+          driveLoadedThisSession = false;
+          driveRevisionsChecked = false;
+          lastRecoveryFoundCount = 0;
+          lastRecoveryRevisionLists = 0;
+          lastRecoveryDownloadedRevisions = 0;
+          const loaded = await loadFromDrive();
+          if (!loaded) return;
+          if (lastRecoveryFoundCount > 0) {
+            await syncToDrive(true);
+            setSyncStatus(
+              "身體紀錄已復原",
+              `已從 ${driveCandidateFiles.length} 個同名雲端檔案及修訂版本找回 ${lastRecoveryFoundCount} 筆紀錄，並寫回目前資料。`,
+              "drive"
+            );
+            showToast(`已找回 ${lastRecoveryFoundCount} 筆身體紀錄`);
+          } else if (lastRecoveryRevisionLists > 0) {
+            setSyncStatus(
+              "未找到更多身體紀錄",
+              `已檢查 ${driveCandidateFiles.length} 個同名雲端檔案及 ${lastRecoveryDownloadedRevisions} 個可下載修訂版本，目前只找到現有紀錄。`,
+              "drive"
+            );
+            showToast("Drive 修訂版本中沒有更多身體紀錄");
+          } else {
+            setSyncStatus(
+              "無法讀取 Drive 修訂歷史",
+              `已找到 ${driveCandidateFiles.length} 個同名雲端檔案，但 Google 沒有提供可讀取的修訂清單；目前資料未被修改。`,
+              "drive"
+            );
+            showToast("Google Drive 未提供可讀取的修訂歷史");
+          }
+        } catch (error) {
+          const detail = describeDriveError(error);
+          setSyncStatus("復原檢查失敗", `${detail} 目前資料未被修改。`, "drive");
+          showToast("無法完成 Drive 歷史紀錄檢查");
+        } finally {
+          button.disabled = false;
+        }
+      }
+
       function disconnectGoogleDrive() {
         const tokenToRevoke = accessToken;
         accessToken = "";
         accessTokenExpiresAt = 0;
         driveFileId = "";
+        driveCandidateFiles = [];
         driveReady = false;
         driveLoadedThisSession = false;
         driveRevisionsChecked = false;
@@ -2383,11 +2438,14 @@
         const params = new URLSearchParams({
           spaces: "appDataFolder",
           fields: "files(id,name,modifiedTime)",
+          pageSize: "100",
+          orderBy: "modifiedTime desc",
           q: `name='${driveQueryName(driveFileName)}' and trashed=false`
         });
         const response = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
         const payload = await response.json();
-        driveFileId = payload.files?.[0]?.id || "";
+        driveCandidateFiles = Array.isArray(payload.files) ? payload.files : [];
+        driveFileId = driveCandidateFiles[0]?.id || "";
         return driveFileId;
       }
 
@@ -2403,34 +2461,56 @@
       async function recoverBodyMetricsFromDriveRevisions(driveState) {
         if (!driveFileId || driveRevisionsChecked) return driveState;
         driveRevisionsChecked = true;
-        try {
-          const params = new URLSearchParams({ pageSize: "20", fields: "revisions(id,modifiedTime)" });
-          const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}/revisions?${params.toString()}`);
-          const payload = await response.json();
-          const revisions = (payload.revisions || [])
-            .sort((a, b) => String(b.modifiedTime || "").localeCompare(String(a.modifiedTime || "")))
-            .slice(0, 12);
-          let bestMetrics = driveState.bodyMetrics || [];
-          for (const revision of revisions) {
-            try {
-              const revisionResponse = await driveFetch(
-                `https://www.googleapis.com/drive/v3/files/${driveFileId}/revisions/${revision.id}?alt=media`
-              );
-              const revisionPayload = await revisionResponse.json();
-              const revisionMetrics = Array.isArray(revisionPayload?.state?.bodyMetrics) ? revisionPayload.state.bodyMetrics : [];
-              if (revisionMetrics.length > bestMetrics.length) bestMetrics = revisionMetrics;
-            } catch {
-              // Some Drive revisions may no longer have downloadable content; continue with the remaining revisions.
-            }
+        lastRecoveryFoundCount = 0;
+        lastRecoveryRevisionLists = 0;
+        lastRecoveryDownloadedRevisions = 0;
+        let recoveredMetrics = [];
+        const files = [...driveCandidateFiles]
+          .sort((a, b) => String(a.modifiedTime || "").localeCompare(String(b.modifiedTime || "")))
+          .slice(-10);
+
+        for (const file of files) {
+          try {
+            const currentResponse = await driveFetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`);
+            const currentPayload = await currentResponse.json();
+            const currentMetrics = Array.isArray(currentPayload?.state?.bodyMetrics) ? currentPayload.state.bodyMetrics : [];
+            recoveredMetrics = mergeBodyMetrics(recoveredMetrics, currentMetrics);
+          } catch {
+            // Continue scanning other matching App Data files.
           }
-          if (bestMetrics.length <= (driveState.bodyMetrics || []).length) return driveState;
-          return {
-            ...driveState,
-            bodyMetrics: mergeBodyMetrics(bestMetrics, driveState.bodyMetrics || [])
-          };
-        } catch {
-          return driveState;
+
+          try {
+            const params = new URLSearchParams({ pageSize: "100", fields: "revisions(id,modifiedTime)" });
+            const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${file.id}/revisions?${params.toString()}`);
+            const payload = await response.json();
+            lastRecoveryRevisionLists += 1;
+            const revisions = (payload.revisions || [])
+              .sort((a, b) => String(a.modifiedTime || "").localeCompare(String(b.modifiedTime || "")))
+              .slice(-30);
+            for (const revision of revisions) {
+              try {
+                const revisionResponse = await driveFetch(
+                  `https://www.googleapis.com/drive/v3/files/${file.id}/revisions/${revision.id}?alt=media`
+                );
+                const revisionPayload = await revisionResponse.json();
+                lastRecoveryDownloadedRevisions += 1;
+                const revisionMetrics = Array.isArray(revisionPayload?.state?.bodyMetrics) ? revisionPayload.state.bodyMetrics : [];
+                recoveredMetrics = mergeBodyMetrics(recoveredMetrics, revisionMetrics);
+              } catch {
+                // Some revisions no longer have downloadable content; continue scanning.
+              }
+            }
+          } catch {
+            // A file may have no accessible revisions; its current content was still checked above.
+          }
         }
+
+        const currentMetrics = driveState.bodyMetrics || [];
+        const mergedMetrics = mergeBodyMetrics(recoveredMetrics, currentMetrics);
+        lastRecoveryFoundCount = Math.max(0, mergedMetrics.length - currentMetrics.length);
+        return lastRecoveryFoundCount
+          ? { ...driveState, bodyMetrics: mergedMetrics }
+          : driveState;
       }
 
       async function loadFromDrive() {
@@ -4205,6 +4285,7 @@
 
       document.getElementById("connectGoogle").addEventListener("click", requestGoogleAccess);
       document.getElementById("syncNow").addEventListener("click", syncNowWithMerge);
+      document.getElementById("recoverDriveHistory").addEventListener("click", recoverDriveHistory);
       document.getElementById("disconnectGoogle").addEventListener("click", disconnectGoogleDrive);
       document.getElementById("reloadApp").addEventListener("click", reloadApp);
       setupPullRefresh();
