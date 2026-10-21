@@ -655,7 +655,7 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 8px;
-        align-items: center;
+        align-items: start;
       }
 
       .multi-select {
@@ -688,19 +688,34 @@
       }
 
       .multi-select-options {
-        position: absolute;
-        z-index: 20;
-        top: calc(100% + 5px);
-        right: 0;
-        left: 0;
-        display: grid;
-        max-height: 240px;
+        position: static;
+        display: block;
+        max-height: min(360px, 56vh);
+        margin-top: 5px;
         overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
         border: 1px solid #d7d0c5;
         border-radius: var(--radius);
         background: #fffdf9;
         box-shadow: 0 12px 30px rgba(52, 50, 43, 0.16);
         padding: 6px;
+      }
+
+      .multi-select-search {
+        position: sticky;
+        z-index: 2;
+        top: -6px;
+        margin: -6px -6px 4px;
+        padding: 7px;
+        border-bottom: 1px solid #e7e0d5;
+        background: #fffdf9;
+      }
+
+      .multi-select-search input {
+        width: 100%;
+        box-sizing: border-box;
       }
 
       .multi-select-option {
@@ -719,8 +734,20 @@
         background: #f3f0e8;
       }
 
+      .multi-select-option[hidden],
+      .multi-select-empty[hidden] {
+        display: none;
+      }
+
       .multi-select-option input {
         margin-top: 2px;
+      }
+
+      .multi-select-empty {
+        padding: 16px 8px;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
       }
 
       .quick-food-hint {
@@ -1940,7 +1967,7 @@
       ];
 
       const appConfig = window.NUTRI_PACE_CONFIG || {};
-      const appVersion = "v32";
+      const appVersion = "v33";
       const bodyMetricsPageSize = 50;
       const storeKey = "nutri-pace-pwa-v1";
       const driveConnectionKey = "nutri-pace-drive-connected";
@@ -2997,11 +3024,12 @@
         const comboOptions = (state.combos || [])
           .map((combo, index) => {
             const total = comboTotals(combo);
-            return `<label class="multi-select-option"><input type="checkbox" data-multi-combo value="${index}" /><span>${escapeHtml(combo.name)} (${Math.round(total.cal)} kcal / ${formatProtein(total.protein)})</span></label>`;
+            const searchText = [combo.name, ...(combo.items || [])].join(" ");
+            return `<label class="multi-select-option" data-multi-option data-search="${escapeHtml(searchText)}"><input type="checkbox" data-multi-combo value="${index}" /><span>${escapeHtml(combo.name)} (${Math.round(total.cal)} kcal / ${formatProtein(total.protein)})</span></label>`;
           })
           .join("");
         const foodOptions = foods
-          .map((food) => `<label class="multi-select-option"><input type="checkbox" data-multi-food value="${escapeHtml(food.name)}" /><span>${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</span></label>`)
+          .map((food) => `<label class="multi-select-option" data-multi-option data-search="${escapeHtml(`${food.name} ${food.tag || ""}`)}"><input type="checkbox" data-multi-food value="${escapeHtml(food.name)}" /><span>${escapeHtml(food.name)} (${Math.round(food.cal)} kcal / ${formatProtein(food.protein)})</span></label>`)
           .join("");
         const rows = meals
           .flatMap((meal) =>
@@ -3054,7 +3082,11 @@
                 <details class="multi-select" id="quickComboSelect">
                   <summary class="field" data-multi-summary data-placeholder="選擇常用餐組合（可多選）">選擇常用餐組合（可多選）</summary>
                   <div class="multi-select-options">
+                    <div class="multi-select-search">
+                      <input class="field" type="search" data-multi-filter placeholder="搜尋組合或組合內食物" autocomplete="off" />
+                    </div>
                     ${comboOptions || `<span class="quick-food-hint">尚未建立常用餐組合</span>`}
+                    <div class="multi-select-empty" data-multi-empty hidden>找不到符合的常用餐組合</div>
                   </div>
                 </details>
                 <button class="tiny-button" id="quickAddCombo" type="button" ${comboOptions ? "" : "disabled"}>加入組合</button>
@@ -3063,7 +3095,13 @@
               <div class="quick-select-row">
                 <details class="multi-select" id="quickFoodSelect">
                   <summary class="field" data-multi-summary data-placeholder="選擇單項食物（可多選）">選擇單項食物（可多選）</summary>
-                  <div class="multi-select-options">${foodOptions}</div>
+                  <div class="multi-select-options">
+                    <div class="multi-select-search">
+                      <input class="field" type="search" data-multi-filter placeholder="輸入食物名稱快速搜尋" autocomplete="off" />
+                    </div>
+                    ${foodOptions}
+                    <div class="multi-select-empty" data-multi-empty hidden>找不到符合的單項食物</div>
+                  </div>
                 </details>
                 <button class="tiny-button" id="quickAddSelectedFood" type="button">加入食物</button>
               </div>
@@ -4136,6 +4174,32 @@
       document.getElementById("openMenu").addEventListener("click", openMenu);
       document.getElementById("closeMenu").addEventListener("click", closeMenu);
       document.getElementById("closeMenuOverlay").addEventListener("click", closeMenu);
+
+      document.addEventListener("input", (event) => {
+        const searchInput = event.target.closest("[data-multi-filter]");
+        if (!searchInput) return;
+        const picker = searchInput.closest(".multi-select");
+        const optionPanel = searchInput.closest(".multi-select-options");
+        if (!picker || !optionPanel) return;
+        const terms = searchInput.value
+          .normalize("NFKC")
+          .toLocaleLowerCase("zh-Hant-TW")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        let visibleCount = 0;
+        picker.querySelectorAll("[data-multi-option]").forEach((option) => {
+          const searchable = String(option.dataset.search || option.textContent || "")
+            .normalize("NFKC")
+            .toLocaleLowerCase("zh-Hant-TW");
+          const matches = terms.every((term) => searchable.includes(term));
+          option.hidden = !matches;
+          if (matches) visibleCount += 1;
+        });
+        const empty = picker.querySelector("[data-multi-empty]");
+        if (empty) empty.hidden = !terms.length || visibleCount > 0;
+        optionPanel.scrollTop = 0;
+      });
 
       document.addEventListener("change", (event) => {
         const checkbox = event.target.closest("[data-multi-combo], [data-multi-food]");
